@@ -31,7 +31,7 @@ int main(){
         char buf[1024];
         memset(buf, 0, sizeof(buf));
         scanf("%s", buf);
-        ssize_t write_bytes = write(sockfd, buf, sizeof(buf)); //发送缓冲区中的数据到服务器socket，返回已发送数据大小
+        ssize_t write_bytes = send(sockfd, buf, sizeof(buf), 0); //发送缓冲区中的数据到服务器socket，返回已发送数据大小
 
         if(write_bytes == -1){ // write返回值为-1，说明发生错误
             printf("socket already disconnected, can't write!!!");
@@ -39,15 +39,15 @@ int main(){
         }
 
         memset(buf, 0, sizeof(buf));
-        ssize_t read_bytes = read(sockfd, buf, sizeof(buf));
+        ssize_t read_bytes = recv(sockfd, buf, sizeof(buf), 0);
         if(read_bytes > 0){
-        printf("message from server: %s\n", buf);
+            printf("message from server: %s\n", buf);
         }else if(read_bytes == 0){      //read返回0，表示EOF，通常是服务器断开链接
-        printf("server socket disconnected!\n");
-        break;
+            printf("server socket disconnected!\n");
+            break;
         }else if(read_bytes == -1){     //read返回-1，表示发生错误，按照上文方法进行错误处理
-        close(sockfd);
-        errif(true, "socket read error");
+            close(sockfd);
+            errif(true, "socket read error");
         }
     }
     close(sockfd);

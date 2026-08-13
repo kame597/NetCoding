@@ -4,7 +4,6 @@
 #include <iostream>       // std::cerr
 #include <unistd.h>
 
-
  void errif(bool condition, const char *errmsg){
     if(condition){ 
         perror(errmsg);
@@ -50,12 +49,12 @@ int main()
         memset(&buf, 0, sizeof(buf));
 
         //从clnt_sockfd读sizeof(buf)的数据到buf中
-        ssize_t read_bytes = read(clnt_sockfd, buf, sizeof(buf));
+        ssize_t read_bytes = recv(clnt_sockfd, buf, sizeof(buf), 0);
 
         if(read_bytes > 0){
             printf("message from client fd %d: %s\n", clnt_sockfd, buf);
-            write(clnt_sockfd, buf, sizeof(buf));
-        }else if(read_bytes == 0){ //read返回0，说明EOF
+            send(clnt_sockfd, buf, sizeof(buf), 0);
+        }else if(read_bytes == 0){ //recv返回0，说明EOF，通信方已经关闭连接
             printf("client fd %d disconnected\n", clnt_sockfd);
             close(clnt_sockfd);
             break;
@@ -64,6 +63,5 @@ int main()
             errif(true, "socket read failure"); //打印错误信息
         }
     }
-
     return 0;
 }
