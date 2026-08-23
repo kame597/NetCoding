@@ -1,0 +1,9 @@
+day06的任务是开始引入Reactor模式
+新建了Server类，其内核为EventLoop类
+EventLoop类是本质上是负责事件循环，即初始server版本里的while循环
+Server类中封装了两个回调函数，用于channel的回调调用
+
+该day的代码中，EventLoop负责封装Epoll
+EventLoop的初始化变相实现了Epoll的初始化
+Server的初始化代码中初始了Socket，并创建服务器Channel，配置回调函数
+最后调用EventLoop的loop函数，实现事件循环

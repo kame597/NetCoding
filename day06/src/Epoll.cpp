@@ -1,5 +1,6 @@
 #include "Epoll.h"
 #include "utils.h"
+#include "Socket.h"
 #include "Channel.h"
 #include <unistd.h>
 #include <cstring>
@@ -27,6 +28,12 @@ Epoll::~Epoll(){
 //     return activeEvents;
 // }
 
+/*
+poll函数
+通过epoll_event[]的就绪event的data.ptr，得到对应的完整Channel
+并记录下该channel监听的events类型，赋给Revent属性
+返回就绪的Channel的集合
+*/
 std::vector<Channel*> Epoll::poll(int timeout){
     std::vector<Channel*> activeChannels;
     int nfds = epoll_wait(epfd, events.get(), 1024, timeout);
