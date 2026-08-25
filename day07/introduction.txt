@@ -1,0 +1,7 @@
+day07的任务是引入Acceptor
+
+Acceptor负责监听socket和监听channel的创建
+并将其注册到Epoll中
+该版本中，Acceptor获取了Server的函数作为回调函数
+因此本质上还是Server实现了连接创建，并未完全分离
+不过已经实现了一定程度的抽象
