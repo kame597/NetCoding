@@ -17,7 +17,7 @@ Server的构造函数，绑定一个EventLoop
 */
 Server::Server(EventLoop* _loop):loop(_loop), acceptor(nullptr){
     acceptor = std::make_unique<Acceptor>(_loop);
-    //此处用占位符，
+    //监听socket已经由Acceptor管理，因此要由Acceptor调用；此处用bind是绑定Server的指针，占位符意味着参数需要在Acceptor中传入
     std::function<void(Socket*)> cb = std::bind(&Server::newConnection, this, std::placeholders::_1);
     acceptor->setNewConnectionCallback(cb);
 }

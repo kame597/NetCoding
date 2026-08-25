@@ -1,0 +1,7 @@
+day08的任务是引入Connection
+
+本质上是跟Acceptor的平行端，用于客户端链接建立
+Connection全权负责跟client的关系，保存了client的socket与channel
+Connection内部声明了用于删除的回调函数
+
+至于新建连接，仍是由Acceptor负责

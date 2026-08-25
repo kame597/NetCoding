@@ -3,6 +3,7 @@
 #include "Socket.h"
 #include "InetAddress.h"
 #include "Channel.h"
+#include <iostream>
 
 /*
 Acceptor的构造函数
@@ -10,7 +11,7 @@ Acceptor的构造函数
 */
 Acceptor::Acceptor(EventLoop* _loop) : loop(_loop){
     sock = std::make_unique<Socket>();
-    addr = std::make_unique<InetAddress>("127.0.0.1", 8888);
+    std::unique_ptr<InetAddress> addr = std::make_unique<InetAddress>("127.0.0.1", 8888);
     sock->bind(addr.get());
     sock->listen(1024);
     sock->setNoBlocking();
@@ -27,11 +28,13 @@ Acceptor::~Acceptor(){
 
 /*
 acceptConnection函数
-调用可调用对象newConnectionCallback
-newConnectionCallback是公共对象，可以外部赋值，其已通过bind绑定，绑定了Server的指针，此处只需要传入Socket*变量即可调用
+
 */
 void Acceptor::acceptConnection(){
-    newConnectionCallback(sock.get());
+    std::unique_ptr<Socket> clnt_sock = std::make_unique<Socket>(sock->accept());
+    std::cout << "[服务器]接受客户端链接！" << "fd: " << clnt_sock->getFd() << std::endl;
+    clnt_sock->setNoBlocking();
+    newConnectionCallback(clnt_sock.release());
 }
 
 /*
