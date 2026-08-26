@@ -20,7 +20,7 @@ public:
     Channel(EventLoop* _loop, int _fd);
     ~Channel();
 
-    void handleEvent(); //新增
+    void handleEvent();
     void enableReading();
   
     int getFd();
