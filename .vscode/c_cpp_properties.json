@@ -3,12 +3,9 @@
         {
             "name": "Linux",
             "includePath": [
-                "${workspaceFolder}/day06/src",
-                "${workspaceFolder}/day06"
+                "${workspaceFolder}/**"
             ],
-            "defines": [],
             "compilerPath": "/usr/bin/g++",
-            "cStandard": "c17",
             "cppStandard": "c++17",
             "intelliSenseMode": "linux-gcc-x64"
         }
