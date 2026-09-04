@@ -9,13 +9,14 @@ Channel::~Channel(){
 }
 
 /*
-handleEvent函数
-将可调用对象callback扔给线程池，交给子线程执行
-如果是Acceptor，则直接调用不走线程池
+*   handleEvent函数
+*   将可调用对象callback扔给线程池，交给子线程执行
+*   如果是Acceptor，则直接调用不走线程池
 */
 void Channel::handleEvent(){
     if(useThreadPool){
-        loop->addTask(callback);    
+        auto cb = callback;
+        loop->addTask(std::move(cb));
     }else{
         callback();  
     }
