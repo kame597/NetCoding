@@ -20,34 +20,59 @@ public:
 
     // void add(std::function<void()>);
 
-    //TODO 模版编程？？？future？？？
-    template<class F, class ...Args>
+    
+    //模版编程，第二个模版类型参数是一个模版参数包
+    template<typename F, typename... Args>
     //auto add(F&& f, Args&&... args) -> std::future<typename std::result_of<F(Args...)>::type>;
     //注：result_of在C++17被弃用了，invoke_result_t是现代写法，其不依赖具体的变量名，只需要提供类型即可推断
     auto add(F&& f, Args&&... args) -> std::future<std::invoke_result_t<F, Args...>>;
 };
 
 
-//模版编程的定义不能放在cpp文件，原因是C++编译器不支持模版的分离编译
-template<class F, class ...Args>
+//模版成员函数的声明与定义要放在同一个文件里
+template<typename F, typename ...Args>
+//省略号在名字后，表示展开参数包，作用是展开包里的每一个元素
 auto ThreadPool::add(F&& f, Args&&... args)
     -> std::future<std::invoke_result_t<F, Args...>>{
+
     using return_type = std::invoke_result_t<F, Args...>;
     
-    //TODO packaged_task是什么鸡毛？？为什么这里要开共享指针？？
-    //TODO forward是完美转发吗？...是某种特殊运算符？？
-    auto task = std::make_shared<std::packaged_task<return_type()> >(
-        std::bind(std::forward<F>(f), std::forward<Args>(args)...));
+    /*
+    *   forward是完美转发，减少了可调用对象的拷贝开销
+    *   如果不用完美转发，即bind(f, args...); 因为f和args是具名变量，所以它们会被解析为左值
+    *   bind会对左值执行拷贝操作，造成拷贝的开销
+    *   而用完美转发，则根据具体类型推导，如果f是右值，则bind使用移动构造，避免了拷贝开销
+    *   同理，参数包（假设是一个很大的vector）也可以用移动的方式避免拷贝开销
+    */ 
+    auto func = std::bind(std::forward<F>(f), std::forward<Args>(args)...);
+    /*
+    *   task是一个指向packaged_task<>对象的共享指针
+    *   packaged_task绑定了一个可调用对象func，其返回值为return_type()
+    *   此处用共享指针，是因为task要装到任务队列里，而任务队列的类型为function
+    *   function必须要求可拷贝，而packaged_task是不可拷贝的，因此用shared_ptr包装解决
+    */
+    auto task = std::make_shared<std::packaged_task<return_type()> >(func);
 
-    //TODO future到底是什么玩意🤔,get_future是哪来的
+    /*
+    *   get_future()是packaged_task<>对象的成员函数，用于返回future实例.
+    *   其会修改packaged_task的内部状态，而线程执行task也会修改packaged_task的内部状态
+    *   因此：需要在notify告知子线程做任务之前，保存一个future值，防止数据竞争（两个线程都访问packaged_task的内部）
+    */
     std::future<return_type> res = task->get_future();
+
     {
         std::unique_lock<std::mutex> lock(tasks_mutex);
         if(stop){
             throw std::runtime_error("线程池已关闭！任务添加失败");
         }
+        /*
+        *   以lambda方式传入一个可调用对象
+        *   该可调用对象捕获了task，并调用了task指向的packaged_lock
+        *   由此绕过function的可拷贝要求
+        */
         tasks.emplace([task](){(*task)();});
     }
-    cv.notify_one();
+
+    cv.notify_one();    //notify后，线程池就可以去执行任务队列里的任务了
     return res;
 }

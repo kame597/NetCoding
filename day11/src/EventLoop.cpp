@@ -40,10 +40,3 @@ void EventLoop::updateChannel(Channel* channel){
     ep->updateChannel(channel);
 }
 
-/*
-addTask函数
-用于调用ThreadPool的add函数，往线程池里加入新的任务
-*/
-void EventLoop::addTask(std::function<void()> func){
-    threadPool->add(func);
-}
