@@ -1,0 +1,6 @@
+day12的任务是引入主从Reactor
+对此需要修改Server，并从EventLoop中移除线程池，交给Server保管
+
+完成后，Server中掌管一个主Reactor和一个vector容器存储从属Reactors
+在void Server::newConnection(Socket* sock)函数中，
+创建的新Connection会被绑定到一个随机的从属Reactor的EventLoop上

@@ -1,6 +1,8 @@
-#include "util.h"
-#include <stdio.h>
-#include <stdlib.h>
+#include "utils.h"
+#include <cstring>
+#include <cstdlib>
+#include <cstdio>
+#include <iostream>
 
 void errif(bool condition, const char *errmsg){
     if(condition){
