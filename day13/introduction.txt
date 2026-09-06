@@ -1,0 +1,6 @@
+day13的任务是完成自定义业务逻辑的实现
+原先的业务逻辑(echo函数)直接放在了Connection中
+经过今日的改造，现在具体的业务可以放在server.cpp和client.cpp的内容中具体实现
+Connection只是简单地用作读取和写入操作
+
+客户端`Connection`**没有绑定事件循环**
