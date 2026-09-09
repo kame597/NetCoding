@@ -1,0 +1,121 @@
+#include "include/tcp_connection.h"
+#include "include/event_loop.h"
+#include "include/channel.h"
+#include "include/utils.h"
+#include <unistd.h>
+#include <iostream>
+#include <cstring>
+#include <cerrno>
+
+TcpConnection::TcpConnection(EventLoop* loop, int connfd, int connid):
+    connfd_(connfd), connid_(connid), conn_state_(ConnectionState::Connected), loop_(loop){
+
+    if(loop != nullptr){
+        conn_channel_ = std::make_unique<Channel>(connfd_, loop);
+        conn_channel_->set_read_callback(std::bind(&TcpConnection::HandleMessage, this));
+        conn_channel_->EnableRead();
+    }
+}
+
+TcpConnection::~TcpConnection(){
+}
+
+void TcpConnection::HandleMessage(){
+    Read();
+    if(on_message_)
+        on_message_(this);
+}
+
+void TcpConnection::HandleClose(){
+    if(conn_state_ != ConnectionState::DisConnected){
+        conn_state_ = ConnectionState::DisConnected;
+        if(on_close_)
+            on_close_(connfd_);
+    }
+}
+
+void TcpConnection::Send(const std::string& msg){
+    set_write_buf(msg.c_str());
+    Write();
+}
+
+void TcpConnection::Send(const char* msg){
+    set_write_buf(msg);
+    Write();
+}
+
+void TcpConnection::Send(const char* msg, int len){
+    write_buffer_.Append(msg, len);
+    Write();
+}
+
+void TcpConnection::Read(){
+    errif(conn_state_ != ConnectionState::Connected, "Connection未连接!");
+    read_buffer_.Clear();
+    ReadNonBlocking();
+}
+
+void TcpConnection::Write(){
+    errif(conn_state_ != ConnectionState::Connected, "Connection未连接!");
+    WriteNonBlocking();
+    write_buffer_.Clear();
+}
+
+
+void TcpConnection::ReadNonBlocking(){
+    char buf[1024];
+    while(true){
+        memset(buf, 0, sizeof(buf));
+        ssize_t read_bytes = read(connfd_, buf, sizeof(buf));
+
+        if(read_bytes > 0){  //如果读到数据，则放到缓冲区中
+            read_buffer_.Append(buf, read_bytes);
+        }
+        else if(read_bytes == -1 && errno == EINTR){     //正常程序中断
+            continue;
+        }
+        else if(read_bytes == -1 && ((errno == EAGAIN) || (errno == EWOULDBLOCK))){  //程序读取完成，或者没有数据可读了
+            break;
+        }
+        else if(read_bytes == 0){    //客户端断开链接
+            std::cout << "客户端:" << connfd_ <<"断开链接" << std::endl;
+            HandleClose();
+            break;
+        }
+        else{
+            std::cout << "客户端:" << connfd_ << "发生其他错误" << std::endl;
+            HandleClose();
+            break;
+        }
+    }
+}
+
+/*
+*   @brief
+*   非阻塞写入，只负责写入，不进行业务设计
+*   dataSize表示总共要写多少数据，dataLeft表示还剩下多少字节没写完   
+*
+*/
+void TcpConnection::WriteNonBlocking(){
+    char buf[write_buffer_.Size()];
+    memcpy(buf, write_buffer_.c_str(), write_buffer_.Size());
+
+    int data_size = write_buffer_.Size();
+    int data_left = data_size;
+
+    while(data_left > 0){
+        ssize_t write_bytes = write(connfd_, buf + data_size - data_left, data_left);
+        if(write_bytes == -1 && errno == EINTR){
+            continue;
+        }
+        else if(write_bytes == -1 && (errno == EAGAIN)){
+            break;
+        }
+        else if(write_bytes == -1){
+            std::cout << "客户端:" << connfd_ << "发生其他错误" << std::endl;
+            HandleClose();
+            break;
+        }
+        data_left -= write_bytes;
+    }
+}
