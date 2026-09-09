@@ -1,0 +1,7 @@
+day14的任务是重构项目，并引入智能指针。
+首先引入了common.h，用于禁止拷贝、移动、赋值运算符
+接着删除了Socket与InetAddress，将其集成入Acceptor
+对于需要Socket的情形，直接用ip和端口替代
+因此需要在析构时析构对应的fd
+
+
