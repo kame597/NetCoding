@@ -10,7 +10,7 @@ Epoller::Epoller(int flag){
     events_ = std::make_unique<epoll_event[]>(1024);
 }
 
-//todo 这个析构也是必要的吗？？？
+//这个析构也是必要的吗？？？ ---是的
 Epoller::~Epoller(){
     if(epfd_ != -1){
         ::close(epfd_);
@@ -64,7 +64,7 @@ void Epoller::UpdateChannel(Channel* channel) const {
 */
 void Epoller::DeleteChannel(Channel* channel) const{
     int sockfd = channel->fd();
-    //todo 为什么这里可以不传epoll_events指针？？？
+    //为什么这里可以不传epoll_events指针？？？---因为该指针用于获取事件具体信息，删除操作不需要
     errif((epoll_ctl(epfd_, EPOLL_CTL_DEL, sockfd, nullptr) == -1), "epoll del错误");
     channel->set_in_epoll(false);
 }

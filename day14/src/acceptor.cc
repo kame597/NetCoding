@@ -33,7 +33,7 @@ Acceptor::~Acceptor(){
 
 void Acceptor::Create(){
     assert(listenfd_ == -1);
-    //TODO 此处的SOCK_CLOEXEC是什么？
+    //此处的SOCK_CLOEXEC是什么？---用于进程exec()替换为新程序时自动关闭fd，防止fd泄露给新程序
     listenfd_ = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     errif(listenfd_ == -1, "监听socket创建失败");
 }

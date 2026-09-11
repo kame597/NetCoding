@@ -20,7 +20,7 @@ private:
     std::queue<std::function<void()>> tasks_; //任务队列，存储具体任务
     std::mutex tasks_mutex_;                  //这个互斥锁是为了应付多线程下的读写操作
     std::condition_variable cv_;              //条件变量，用于线程同步
-    std::atomic<bool> stop_{false};           //这个stop表示线程池是否关闭 //todo atomic是什么用的？？？？
+    std::atomic<bool> stop_{false};           //atomic：实现原子操作：读和写是最小操作，不会出现读一半被写的情况；线程能及时看到最新值
 };
 
 /*

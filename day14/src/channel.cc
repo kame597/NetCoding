@@ -19,7 +19,7 @@ Channel::~Channel(){
 */
 void Channel::HandleEvent() const {
 
-    //TODO 这里的EPOLLRDHUP是啥？？？
+    //这里的EPOLLRDHUP是啥？？？ ---直接表示对端关闭了写端，意为对端发送完成，不需要再通过读取字符数为0来试探
     if(ready_events_ & (EPOLLIN | EPOLLPRI | EPOLLRDHUP)){
         if(read_callback_)  read_callback_();
     }
