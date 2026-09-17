@@ -1,0 +1,20 @@
+day15的任务是重构TcpConnection，明确其生命周期，并做出大量优化
+采用了延迟析构的机制
+
+主要解决三个问题：
+1. 控制TcpConnection在最后析构：
+主要用到了智能指针管理TcpConnection，防止因erase直接删除
+还用到enable_shared_from_this + shared_from_this()：
+让 TcpConnection 能在回调里拿到自身的 shared_ptr，延长生命；
+并用到延迟删除，建立了pending_functors_，在HandleEvent之后调用删除
+
+
+2. 防止connections_map_数据竞争
+主从reactor都会访问connections_map_，存在数据竞争问题
+原先版本用锁的方式解决，这里使用新方案：用延时任务队列，让主reactor全权负责
+原理是判断当前线程tid是否为主reactor所在线程的tid，如果是则直接执行，不是则扔进延时队列
+
+3. 防止延时任务队列阻塞
+由于pending_functors_必须要在HandleEvent之后才能执行
+如果epoll上一直没有事件，则epoll_wait会一直阻塞，pending_functors_就会一直无法执行
+解决方法是使用eventfd，如果有事件扔到延时队列，则做个条件判断，通过eventfd来手动唤醒epoll
