@@ -1,0 +1,8 @@
+day17的任务是分离TcpServer对线程的操作，并优化线程池设计
+引入了EventLoopThread和EventLoopThreadPool
+
+EventLoopThread是封装的线程类，专门负责创建运行loop函数的线程
+EventLoopThreadPool是针对EventLoopThread的线程池，用于创建并管理线程，并调用EventLoopThread的线程创建方法
+
+TcpServer只需要拥有一个EventLoopThreadPool对象，通过一个Start函数完成所有操作
+因此代码易读性大大提高
