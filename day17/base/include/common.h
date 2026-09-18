@@ -6,7 +6,8 @@ class Epoller;
 class Acceptor;
 class Channel;
 class Buffer;
-class ThreadPool;
+class EventLoopTread;
+class EventLoopThreadPool;
 class Socket;
 class EventLoop;
 

@@ -69,7 +69,7 @@ void oneClient(int msgs, int wait){
 
 int main(int argc, char* argv[]){
     int threads_ = 1000;   // 客户端线程数
-    int msgs = 100;       // 每个客户端发送的消息数
+    int msgs = 1000;       // 每个客户端发送的消息数
     int wait = 0;         // 每个客户端连接后等待的秒数
     int o;
     const char* optstring = "t:m:w:";

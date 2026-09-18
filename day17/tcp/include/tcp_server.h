@@ -8,7 +8,7 @@
 class EventLoop;
 class Acceptor;
 class TcpConnection;
-class ThreadPool;
+class EventLoopThreadPool;
 class TcpServer{
 public:
     DISALLOW_COPY_AND_MOVE(TcpServer);
@@ -27,16 +27,18 @@ public:
 
     //  接收到信息做的操作
     void HandleNewConnection(int fd);
+
+    void SetThreadNums(int thread_nums);
     
 private:
     EventLoop* main_reactor_;
     int next_conn_id_;
 
-    std::vector<std::unique_ptr<EventLoop>> sub_reactors_;
+    // std::vector<std::unique_ptr<EventLoop>> sub_reactors_;
     std::unordered_map<int,std::shared_ptr<TcpConnection>> connections_map_;
     std::unique_ptr<Acceptor> acceptor_;
 
-    std::unique_ptr<ThreadPool> thread_pool_;
+    std::unique_ptr<EventLoopThreadPool> thread_pool_;
 
     std::function<void( const std::shared_ptr<TcpConnection> &)> on_connect_;
     std::function<void( const std::shared_ptr<TcpConnection> &)> on_message_;

@@ -1,6 +1,6 @@
 #include "tcp_server.h"
 #include "event_loop.h"
-#include "thread_pool.h"
+#include "event_loop_thread_pool.h"
 #include "channel.h"
 #include "acceptor.h"
 #include "tcp_connection.h"
@@ -22,24 +22,18 @@ TcpServer::TcpServer(EventLoop* loop, const char* ip, const int port):main_react
     std::function<void(int)> cb = std::bind(&TcpServer::HandleNewConnection, this, std::placeholders::_1);
     acceptor_->set_newconnection_callback(cb);
 
-    int size = std::thread::hardware_concurrency();
-    thread_pool_ = std::make_unique<ThreadPool>(size);
-    
-    for(int i = 0; i < size; ++ i){
-        sub_reactors_.emplace_back(std::make_unique<EventLoop>());
-    }
+    thread_pool_ = std::make_unique<EventLoopThreadPool>(loop);
+    SetThreadNums(std::thread::hardware_concurrency());
 }
 
 TcpServer::~TcpServer(){}
 
 /*
 *   @brief
-*   创建子循环，插入线程池，开启主循环
+*   封装避免线程操作，开启主循环和线程池
 */
 void TcpServer::Start(){
-    for(size_t i = 0; i < sub_reactors_.size(); ++ i){
-        thread_pool_->Add(&EventLoop::Loop, sub_reactors_[i].get());
-    }
+    thread_pool_->Start();
     main_reactor_->Loop();
 }
 
@@ -47,10 +41,13 @@ void TcpServer::Start(){
 
 void TcpServer::HandleNewConnection(int fd){
     errif(fd == -1, "[新建客户端]该socketfd无效, 无法创建连接");
-    int random = fd % sub_reactors_.size();
+    // int random = fd % sub_reactors_.size();
 
-    // 创建TcpConnection对象，交付给sub_reactor
-    std::shared_ptr<TcpConnection> conn = std::make_shared<TcpConnection>(sub_reactors_[random].get(), fd, next_conn_id_);
+    EventLoop* sub_reactor_ = thread_pool_->next_loop();
+
+    // 创建TcpConnection对象，交付给指定的sub_reactor_
+    std::shared_ptr<TcpConnection> conn = std::make_shared<TcpConnection>(sub_reactor_, fd, next_conn_id_);
+
     std::function<void(const std::shared_ptr<TcpConnection> &)> cb = std::bind(&TcpServer::HandleClose, this, std::placeholders::_1);
     conn->set_close_callback(cb);
 
@@ -87,4 +84,8 @@ void TcpServer::HandleCloseInLoop(const std::shared_ptr<TcpConnection> & conn){
     connections_map_.erase(conn->fd());
 
     conn->loop()->QueueInLoop(std::bind(&TcpConnection::ConnectionDestruct, conn));
+}
+
+void TcpServer::SetThreadNums(int thread_nums){
+    thread_pool_->set_thread_nums(thread_nums);
 }
