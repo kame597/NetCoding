@@ -23,7 +23,7 @@ TcpServer::TcpServer(EventLoop* loop, const char* ip, const int port):main_react
     acceptor_->set_newconnection_callback(cb);
 
     thread_pool_ = std::make_unique<EventLoopThreadPool>(loop);
-    SetThreadNums(std::thread::hardware_concurrency());
+    set_thread_nums(std::thread::hardware_concurrency());
 }
 
 TcpServer::~TcpServer(){}
@@ -86,6 +86,6 @@ void TcpServer::HandleCloseInLoop(const std::shared_ptr<TcpConnection> & conn){
     conn->loop()->QueueInLoop(std::bind(&TcpConnection::ConnectionDestruct, conn));
 }
 
-void TcpServer::SetThreadNums(int thread_nums){
+void TcpServer::set_thread_nums(int thread_nums){
     thread_pool_->set_thread_nums(thread_nums);
 }

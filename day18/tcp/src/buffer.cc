@@ -1,11 +1,8 @@
 #include "buffer.h"
 #include <iostream>
 
-void Buffer::Append(const char* _str, int _size){
-    for(int i = 0; i < _size; ++ i){
-        if(_str[i] == '\0') break;
-        buf_.push_back(_str[i]);
-    }
+void Buffer::Append(const char* _str, size_t _size){
+    buf_.append(_str, _size);
 }
 
 ssize_t Buffer::Size() const{
@@ -20,6 +17,12 @@ void Buffer::Clear(){
     buf_.clear();   
 }
 
+const char *Buffer::FindCRLF() const
+{
+    size_t pos = buf_.find("\r\n");
+    return pos == std::string::npos ? nullptr : buf_.data() + pos;
+}
+
 /*
 setBuf函数
 用于设定Buffer的内容
@@ -27,4 +30,8 @@ setBuf函数
 void Buffer::set_buf(const char* buf){
     buf_.clear();
     buf_.append(buf);
+}
+
+void Buffer::set_buf(const std::string& buf){
+    buf_ = buf;
 }

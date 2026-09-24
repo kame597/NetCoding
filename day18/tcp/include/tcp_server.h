@@ -28,7 +28,7 @@ public:
     //  接收到信息做的操作
     void HandleNewConnection(int fd);
 
-    void SetThreadNums(int thread_nums);
+    void set_thread_nums(int thread_nums);
     
 private:
     EventLoop* main_reactor_;
