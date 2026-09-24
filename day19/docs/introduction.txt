@@ -1,0 +1,8 @@
+day18的任务是引入Http的存储和解析设备
+项目中，http_request用于存储请求的内容
+http_context负责解析Http报文，并将报文内容存入http_request
+
+在http_context中采用有限状态机循环的方式，即保持一个while循环，
+持续判断单步解析的状态，来切换当前解析的状态
+例如：如果解析请求行的解析结果为kOk，则可以正常切换到expectHeader状态
+那么下一次循环，就会进入解析首部行的函数中
