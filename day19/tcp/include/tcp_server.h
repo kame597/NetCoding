@@ -32,7 +32,7 @@ public:
     
 private:
     EventLoop* main_reactor_;
-    int next_conn_id_;
+    uint64_t next_conn_id_;
 
     // std::vector<std::unique_ptr<EventLoop>> sub_reactors_;
     std::unordered_map<int,std::shared_ptr<TcpConnection>> connections_map_;

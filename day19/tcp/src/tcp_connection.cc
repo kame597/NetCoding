@@ -7,13 +7,12 @@
 #include <cstring>
 #include <cerrno>
 
-TcpConnection::TcpConnection(EventLoop* loop, int connfd, int connid):
+TcpConnection::TcpConnection(EventLoop* loop, int connfd, uint64_t connid):
     connfd_(connfd), connid_(connid), conn_state_(ConnectionState::Connected), loop_(loop){
 
     if(loop != nullptr){
         conn_channel_ = std::make_unique<Channel>(connfd_, loop);
         conn_channel_->set_read_callback(std::bind(&TcpConnection::HandleMessage, this));
-        conn_channel_->EnableRead();
     }
 }
 
@@ -26,7 +25,6 @@ TcpConnection::~TcpConnection(){
 *   这部分专门分离出来，因为shared_from_this是无法在构造函数中调用的
 */
 void TcpConnection::ConnectionEstablish(){
-    conn_state_ = ConnectionState::Connected;
     conn_channel_->Tie(shared_from_this());     //conn_channel绑定了TcpConnection的指针，保存了一个引用计数，用于延迟删除
     conn_channel_->EnableRead();
     if(on_connect_)

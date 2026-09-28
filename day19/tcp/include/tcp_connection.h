@@ -22,7 +22,7 @@ public:
 
     DISALLOW_COPY_AND_MOVE(TcpConnection);
 
-    TcpConnection(EventLoop* loop, int connfd, int connid);
+    TcpConnection(EventLoop* loop, int connfd, uint64_t connid);
     ~TcpConnection();
 
     void ConnectionEstablish();
@@ -50,11 +50,11 @@ public:
     ConnectionState conn_state()const { return conn_state_; }
     EventLoop* loop()const {return loop_;}
     int fd()const { return connfd_; }
-    int id()const { return connid_; }
+    uint64_t id()const { return connid_; }
 
 private:
     int connfd_;
-    int connid_;
+    uint64_t connid_;
     ConnectionState conn_state_;
 
     EventLoop* loop_;

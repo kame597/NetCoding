@@ -38,7 +38,7 @@ void EventLoopThread::ThreadFunc()
     EventLoop loop; //栈上局部对象，真正本体
     {
         std::unique_lock<std::mutex> lock(mutex_);
-        created_loop_ = &loop;  //成员指针，指向本体
+        created_loop_ = &loop;  //成员指针，指向本体，此处上锁是因为ThreadFunc是异步的，主线程调用StartLoopThread会导致created_loop_数据竞争
         cv_.notify_one();
     }
     created_loop_ -> Loop();

@@ -7,6 +7,10 @@ EventLoopThreadPool::EventLoopThreadPool(EventLoop *loop):
 
 EventLoopThreadPool::~EventLoopThreadPool(){}
 
+/*
+*   Start函数
+*   创建指定数量的线程，并开启对应线程的事件循环
+*/
 void EventLoopThreadPool::Start(){
     for(int i = 0; i < thread_nums_; ++ i){
         std::unique_ptr<EventLoopThread> event_loop_thread_ptr = std::make_unique<EventLoopThread>();
@@ -15,6 +19,11 @@ void EventLoopThreadPool::Start(){
     }
 }
 
+/*
+*   next_loop函数
+*   用于返回下一个事件循环，用于轮询
+*   每当来一个新连接，就取下一个子reactor
+*/
 EventLoop *EventLoopThreadPool::next_loop(){
     EventLoop* ret = main_reactor_;
     if(!loops_.empty()){

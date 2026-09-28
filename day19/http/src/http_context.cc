@@ -149,7 +149,7 @@ bool HttpContext::ParseUrl(const std::string &raw_url){
         if(amp == std::string::npos) amp = query.size();
 
         std::string pair = query.substr(start, amp - start); //从查询参数串找一个子串配对，比如q=cpp
-        if(!pair.empty()){
+        if(!pair.empty()){  //排除参数串为空的情形
             auto eq = pair.find('=');
             if(eq == std::string::npos){
                 request_.set_request_params(pair, "");

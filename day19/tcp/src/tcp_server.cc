@@ -57,8 +57,6 @@ void TcpServer::HandleNewConnection(int fd){
 
     // 更新连接的id
     ++ next_conn_id_;
-    if(next_conn_id_ == 1000)
-        next_conn_id_ = 1;
     
     // 开始监听读事件
     conn->ConnectionEstablish();
