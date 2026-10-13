@@ -14,6 +14,10 @@
 */
 class TcpConnection : public std::enable_shared_from_this<TcpConnection>{
 public:
+    using ConnectionCallback = std::function<void(std::shared_ptr<TcpConnection>)>;
+    using MessageCallback = std::function<void(std::shared_ptr<TcpConnection>, Buffer*)>;
+    using CloseCallback = std::function<void(std::shared_ptr<TcpConnection>)>;
+
     enum ConnectionState{
         Invalid = 1,
         Connected,
@@ -28,11 +32,10 @@ public:
     void ConnectionEstablish();
 
     void ConnectionDestruct();
-
     
-    void set_close_callback(std::function<void (std::shared_ptr<TcpConnection>)>const& cb){ on_close_ = std::move(cb); }
-    void set_message_callback(std::function<void (std::shared_ptr<TcpConnection>)>const& cb){ on_message_ = std::move(cb); }
-    void set_connect_callback(std::function<void (std::shared_ptr<TcpConnection>)>const& cb){ on_connect_ = std::move(cb); }
+    void set_close_callback(CloseCallback cb){ on_close_ = std::move(cb); }
+    void set_message_callback(MessageCallback cb){ on_message_ = std::move(cb); }
+    void set_connection_callback(ConnectionCallback cb){ on_connection_ = std::move(cb); }
 
     void set_write_buf(const char* buf){ write_buffer_.set_buf(buf); }
     const char* read_buffer(){ return read_buffer_.c_str(); }
@@ -65,9 +68,9 @@ private:
 
 
     //三个业务回调，分别用于关闭时触发，收信息，建立连接，由TcpServer注入
-    std::function<void(const std::shared_ptr<TcpConnection> &)> on_close_;
-    std::function<void(const std::shared_ptr<TcpConnection> &)> on_message_;
-    std::function<void(const std::shared_ptr<TcpConnection> &)> on_connect_;
+    CloseCallback on_close_;
+    MessageCallback on_message_;
+    ConnectionCallback on_connection_;
 
     void ReadNonBlocking();
     void WriteNonBlocking();

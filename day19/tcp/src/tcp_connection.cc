@@ -27,8 +27,8 @@ TcpConnection::~TcpConnection(){
 void TcpConnection::ConnectionEstablish(){
     conn_channel_->Tie(shared_from_this());     //conn_channel绑定了TcpConnection的指针，保存了一个引用计数，用于延迟删除
     conn_channel_->EnableRead();
-    if(on_connect_)
-        on_connect_(shared_from_this());
+    if(on_connection_)
+        on_connection_(shared_from_this());
 }
 
 /*
@@ -43,7 +43,7 @@ void TcpConnection::ConnectionDestruct(){
 void TcpConnection::HandleMessage(){
     Read();
     if(on_message_)
-        on_message_(shared_from_this());
+        on_message_(shared_from_this(), &read_buffer_);
 }
 
 void TcpConnection::HandleClose(){
@@ -77,7 +77,7 @@ void TcpConnection::Send(const char* msg, int len){
 
 void TcpConnection::Read(){
     if(conn_state_ != ConnectionState::Connected) return;
-    read_buffer_.Clear();
+    // read_buffer_.Clear();   为适应Http的半包行为，改装成累积缓冲区，不再清空
     ReadNonBlocking();
 }
 

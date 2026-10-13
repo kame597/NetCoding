@@ -30,7 +30,7 @@ TcpServer::~TcpServer(){}
 
 /*
 *   @brief
-*   封装避免线程操作，开启主循环和线程池
+*   开启tcp服务器，即开启主rector事件循环和线程池
 */
 void TcpServer::Start(){
     thread_pool_->Start();
@@ -48,10 +48,10 @@ void TcpServer::HandleNewConnection(int fd){
     // 创建TcpConnection对象，交付给指定的sub_reactor_
     std::shared_ptr<TcpConnection> conn = std::make_shared<TcpConnection>(sub_reactor_, fd, next_conn_id_);
 
-    std::function<void(const std::shared_ptr<TcpConnection> &)> cb = std::bind(&TcpServer::HandleClose, this, std::placeholders::_1);
-    conn->set_close_callback(cb);
+    // std::function<void(const std::shared_ptr<TcpConnection> &)> cb = std::bind(&TcpServer::HandleClose, this, std::placeholders::_1);
+    conn->set_close_callback(std::bind(&TcpServer::HandleClose, this, std::placeholders::_1));
 
-    conn->set_connect_callback(on_connect_);
+    conn->set_connection_callback(on_connection_);
     conn->set_message_callback(on_message_);
     connections_map_[fd] = conn;    // 此处因为用了共享指针，可以直接赋值
 
@@ -65,15 +65,19 @@ void TcpServer::HandleNewConnection(int fd){
 /*
 *   HandleClose
 *   @brief 
-*   由main_reactor调用RunInLoop，用main_reactor的tid判断是否为main_reactor来执行erase操作，
-*   main_reactor_会调用IsInLoop判断，其中tid_是main_reactor_的，
-*   而current_thread::tid()得到的是sub_reactor_的tid
+*   先调用上层Http的删表操作，再调用自身层的延迟析构功能
 */
 void TcpServer::HandleClose(const std::shared_ptr<TcpConnection> & conn){
-    std::cout << current_thread::tid() << "TcpServer::HandleClose" << std::endl;
+    if(on_close_) on_close_(conn);
     main_reactor_->RunInLoop(std::bind(&TcpServer::HandleCloseInLoop, this, conn));
 }
 
+/*
+*   @brief
+*   具体的关闭处理，主要是从connections_map_表中删掉conn，并将析构任务投递到sub线程执行
+*   投递到sub线程执行是为了延迟执行ConnectionDestruct，当前子Reactor的loop循环理应正在执行HandleEvent
+*   执行完HandleEvent，才会执行在延时队列里的ConnectionDestruct，而ConnectionDestruct既可以清除channel，在函数返回后引用归零，还会清除TcpConnection
+*/
 void TcpServer::HandleCloseInLoop(const std::shared_ptr<TcpConnection> & conn){
     std::cout << current_thread::tid()  << 
     " TcpServer::HandleCloseInLoop - Remove connection id: " <<  conn->id() << " and fd: " << conn->fd() << std::endl;

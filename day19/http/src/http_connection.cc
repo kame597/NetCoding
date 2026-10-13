@@ -7,26 +7,42 @@ HttpConnection::HttpConnection(const std::shared_ptr<TcpConnection> &conn):
 HttpConnection::~HttpConnection()
 {}
 
+void HttpConnection::OnMessage(Buffer *buf){
+
+}
+
+void HttpConnection::OnClose(){
+
+}
+
+void HttpConnection::set_message_callback(MessageCallback cb){
+    message_callback_ = std::move(cb);
+}
+
 const std::shared_ptr<TcpConnection> &HttpConnection::tcp_conn() const{
     return conn_;
 }
 
-HttpContext &HttpConnection::context(){
-    return context_;
-}
 
 int HttpConnection::keepalive_count() const{
     return keepalive_count_;
 }
 
-void HttpConnection::incr_keepalive(){
-    ++ keepalive_count_;
-}
+
 
 bool HttpConnection::should_close() const{
     return should_close_;
 }
 
-void HttpConnection::set_should_close(bool status){
-    should_close_ = status;
+void HttpConnection::HandleRequest(const HttpRequest &req)
+{
+}
+
+
+void HttpConnection::SendResponse(const HttpResponse &resp)
+{
+}
+
+void HttpConnection::Reset()
+{
 }
