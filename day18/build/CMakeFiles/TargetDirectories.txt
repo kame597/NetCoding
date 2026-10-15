@@ -1,0 +1,6 @@
+/home/kame/NetCoding/day18/build/CMakeFiles/webServer.dir
+/home/kame/NetCoding/day18/build/CMakeFiles/echoserver.dir
+/home/kame/NetCoding/day18/build/CMakeFiles/client.dir
+/home/kame/NetCoding/day18/build/CMakeFiles/http_test.dir
+/home/kame/NetCoding/day18/build/CMakeFiles/edit_cache.dir
+/home/kame/NetCoding/day18/build/CMakeFiles/rebuild_cache.dir

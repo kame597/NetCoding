@@ -1,0 +1,1 @@
+g++ -g -Wall -Wl,--dependency-file=CMakeFiles/client.dir/link.d CMakeFiles/client.dir/test/test.cpp.o -o client  libwebServer.a

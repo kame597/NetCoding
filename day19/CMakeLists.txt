@@ -32,3 +32,6 @@ target_link_libraries(client PRIVATE webServer)
 
 add_executable(http_test test/http_test.cpp)
 target_link_libraries(http_test PRIVATE webServer)
+
+add_executable(http_server_test test/http_server_test.cpp)
+target_link_libraries(http_server_test PRIVATE webServer)

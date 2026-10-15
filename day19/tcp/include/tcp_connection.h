@@ -1,8 +1,10 @@
 #pragma once
 #include "common.h"
+#include "buffer.h"
 #include <functional>
 #include <memory>
-#include "buffer.h"
+#include <cstdint>
+
 
 /*
 *   enable_shared_from_this是C++11引入的模版类，定义于memory中

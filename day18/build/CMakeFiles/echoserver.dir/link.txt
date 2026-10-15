@@ -1,0 +1,1 @@
+g++ -g -Wall -Wl,--dependency-file=CMakeFiles/echoserver.dir/link.d CMakeFiles/echoserver.dir/test/echo_server.cpp.o -o echoserver  libwebServer.a

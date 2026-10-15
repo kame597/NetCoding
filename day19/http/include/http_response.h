@@ -41,7 +41,7 @@ public:
 private:
     StatusCode status_code_;
     //不需要存储具体的状态信息，因为其可以通过status_code_推导而出
-    std::string version_;
+    std::string version_ = "HTTP/1.1";
     std::map<std::string, std::string> header_;
     std::string body_;
 };

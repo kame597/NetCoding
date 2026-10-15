@@ -16,13 +16,14 @@ public:
         kGotAll     //收集完毕
     };
 
+    // 解析的最终结果
     enum class ParseResult{
         kNeedMore,
         kGotAll,
         kError
     };
 
-    //表示单步解析步骤的结果
+    //表示单步解析步骤的结果状态
     enum class ParseState{
         kNeedMore,  //数据不完整，等待更多数据
         kOk,        //本步完成

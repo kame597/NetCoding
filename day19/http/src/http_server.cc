@@ -63,7 +63,6 @@ void HttpServer::OnMessage(const std::shared_ptr<TcpConnection> &conn, Buffer *b
 }
 
 void HttpServer::OnClose(const std::shared_ptr<TcpConnection> &conn){
-    std::shared_ptr<HttpConnection> http_conn;
     {
         std::lock_guard<std::mutex> lock(conns_mutex_);
         auto it = http_conns_.find(conn->id());

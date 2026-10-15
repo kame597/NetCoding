@@ -10,7 +10,7 @@ HttpContext::~HttpContext(){
 
 /*
 *   @brief
-*   ParseRequest为状态机主循环，持续处理报文内容
+*   ParseRequest为状态机主循环，持续处理报文内容，根据当前状态切换
 */
 HttpContext::ParseResult HttpContext::ParseRequest(Buffer *buf){
     while(state_ != HttpRequestParseState::kGotAll){
@@ -51,13 +51,13 @@ HttpContext::ParseState HttpContext::ParseRequestLine(Buffer * buf){
     if(!crlf) return ParseState::kNeedMore; //如果当前请求行被截断，则等待下次数据
 
     auto start = buf->Peek(); 
-    auto space1 = std::find(start, crlf, ' ');  //注：' '代表char，而" "代表char[2]
+    auto space1 = std::find(start, crlf, ' ');  //注：' '代表char，而" "代表char[2]，space1代表第一个空格的位置
     if(space1 == crlf) return ParseState::kError;
     
     auto space2 = std::find(space1 + 1, crlf, ' ');
     if(space2 == crlf) return ParseState::kError;
 
-    std::string method = std::string(start, space1);
+    std::string method = std::string(start, space1);   //起始位置到第一个空格就是方法字段
     request_.set_method(method);
     if(request_.method() == HttpRequest::Method::kInvalid) return ParseState::kError;    //对畸形报文的校验
 

@@ -23,7 +23,6 @@ public:
 
     // 对外动作接口
     void OnMessage(Buffer* buf);    
-    void OnClose();
 
     // 回调注入接口
     void set_message_callback(MessageCallback cb);
@@ -37,11 +36,11 @@ private:
     // 内部实现方法
     void HandleRequest(const HttpRequest& req);     //解析请求报文
     void SendResponse(const HttpResponse& resp);    //发送响应报文
-    void Reset();
+    // void Reset();
 
     MessageCallback message_callback_;
     std::shared_ptr<TcpConnection> conn_;   //不用裸指针是防止野指针，因为TcpConnection被shared_map管理，有可能被误析构
-    HttpContext context_;   //用于解析报文
+    HttpContext context_;           //用于解析报文
     int keepalive_count_ = 0;       // 计数器，计数这个连接已经处理了多少请求，用于长连接
     bool should_close_ = false;     // 标记位，表示这个连接处理完当前请求后，应该被关闭
 };
