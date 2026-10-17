@@ -13,6 +13,7 @@ void HttpConnection::OnMessage(Buffer *buf){
         if(result == HttpContext::ParseResult::kGotAll){
             HandleRequest(context_.request());
             context_.Reset();
+            if(should_close_) break;
         }
         else if(result == HttpContext::ParseResult::kError){
             should_close_ = true;
@@ -63,7 +64,7 @@ void HttpConnection::HandleRequest(const HttpRequest &req){
 *   通过TcpConnection，发送序列化了的HttpResponse
 */
 void HttpConnection::SendResponse(const HttpResponse &resp){
-    std::string std_resp = resp.ToString();
+    std::string std_resp = resp.ToString(true);
     conn_->Send(std_resp);
 }
 

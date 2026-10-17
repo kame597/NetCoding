@@ -34,7 +34,7 @@ public:
     void set_body(const std::string& body);
     const std::string& body() const;
 
-    std::string ToString() const; //用于序列化响应报文，是HttpResponse的核心功能
+    std::string ToString(bool keep_alive) const; //用于序列化响应报文，是HttpResponse的核心功能
 
     void Clear();
 

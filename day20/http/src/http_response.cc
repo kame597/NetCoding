@@ -70,7 +70,7 @@ const std::string& HttpResponse::body() const{
     return body_;
 }
 
-std::string HttpResponse::ToString()const{
+std::string HttpResponse::ToString(bool keep_alive)const{
     std::string str;
     auto space = " ";
     auto crlf = "\r\n";
@@ -92,7 +92,10 @@ std::string HttpResponse::ToString()const{
 
     if(status_code_ != StatusCode::k204NoContent)   // 204的语义就是不存在content-length，因此需要过滤204状态码
         str += "Content-Length: " + std::to_string(body_.size()) + crlf;
-    str += "Connection: close\r\n";     // 假设使用的是短连接
+    if(keep_alive)
+        str += "Connection: keep_alive\r\n";     // 假设使用的是短连接
+    else
+        str += "Connection: close\r\n";
 
     str += crlf;    //空行
     str += body_;
