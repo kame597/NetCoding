@@ -5,6 +5,9 @@
 TimeStamp::TimeStamp():micro_seconds_(0){
 }
 
+TimeStamp::~TimeStamp()
+{}
+
 TimeStamp::TimeStamp(int64_t micro_seconds) : micro_seconds_(micro_seconds)
 {}
 

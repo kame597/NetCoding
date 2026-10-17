@@ -12,11 +12,11 @@
 *   @brief
 *   TimeStamp 用于表示时间点，内部是自 Unix 纪元以来的微秒数。
 *   使用 CLOCK_REALTIME（gettimeofday），即真实时间，用于日志记录。
-*   TimeStamp不用于定时器,定时器用 TimerQueue 内部的 steady_clock。
 */
 class TimeStamp{
 public:
     TimeStamp();
+    ~TimeStamp();
     explicit TimeStamp(int64_t micro_seconds);  //根据微秒数构造
 
     bool operator<(const TimeStamp& rhs) const;     // todo 运算符重载
@@ -29,7 +29,6 @@ public:
     std::string ToFormattedString() const;
     int64_t microseconds() const;
 
-    ~TimeStamp();
 private:
     int64_t micro_seconds_;     // 微秒数，用int64_t可以直接to_string用于日志，且可以跨平台统一
     // micro_seconds_指的是自"1970-01-01 00:00:00 UTC"（Unix纪元）起，经过了多少微秒数
