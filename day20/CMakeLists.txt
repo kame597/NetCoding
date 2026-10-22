@@ -10,7 +10,7 @@ set(CMAKE_CXX_FLAGS "-g -Wall")
 find_package(Threads REQUIRED)
 
 aux_source_directory(base/src SRC_LIST1)
-aux_source_directory(tcp/src SRC_LIST2)
+aux_source_directory(net/src SRC_LIST2)
 aux_source_directory(http/src SRC_LIST3)
 
 set(EXECUTABLE_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/build)
@@ -19,7 +19,7 @@ set(EXECUTABLE_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/build)
 add_library(webServer STATIC ${SRC_LIST1} ${SRC_LIST2} ${SRC_LIST3})
 
 #指定编译时的头文件搜索路径 -I
-target_include_directories(webServer PUBLIC base/include tcp/include http/include)
+target_include_directories(webServer PUBLIC base/include net/include http/include)
 
 #指定链接时挂的库
 target_link_libraries(webServer PUBLIC Threads::Threads)
@@ -35,3 +35,6 @@ target_link_libraries(http_test PRIVATE webServer)
 
 add_executable(http_server_test test/http_server_test.cpp)
 target_link_libraries(http_server_test PRIVATE webServer)
+
+add_executable(timerfd_test test/timerfd_test.cpp)
+target_link_libraries(timerfd_test PRIVATE webServer)

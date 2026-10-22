@@ -40,7 +40,7 @@ TimeStamp TimeStamp::Now(){
     *   suseconds_t tv_usec 秒内小数部分
     * 
     */
-    struct timeval tv;
+    struct timeval tv{};
     gettimeofday(&tv, nullptr);     //gettimeofday用于获取真实时间，将真实时间写入tv中
     int64_t micro_seconds = static_cast<int64_t>(tv.tv_sec) * 1000000 + static_cast<int64_t>(tv.tv_usec);   //将秒转化为微秒，再拼上小数
     return TimeStamp(micro_seconds);
