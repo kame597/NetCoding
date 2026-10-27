@@ -10,7 +10,7 @@ TimerQueue::TimerQueue(EventLoop* loop) :
     loop_(loop),
     // TFD_NONBLOCK —— 非阻塞模式,该fd不会阻塞
     // TFD_CLOEXEC —— 执行 exec 时自动关闭，不会泄露给新程序
-    timerfd_(timerfd_create(CLOCK_REALTIME, TFD_NONBLOCK | TFD_CLOEXEC)),
+    timerfd_(timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC)),
     timer_channel_(std::make_unique<Channel>(timerfd_, loop)){
         errif(timerfd_ == -1, "timerfd创建失败");
         timer_channel_->set_read_callback(std::bind(&TimerQueue::HandleRead, this));
@@ -32,6 +32,8 @@ int64_t TimerQueue::AddTimer(TimerCallback cb, TimeStamp timestamp, double inter
     TimerEntry entry{id, std::move(cb), timestamp, interval};
     
     auto it = timer_set_.insert(entry).first;   // 依赖set的排序性，判断插入的定时器是否是最早的，如果是，则更新timerfd
+    id_to_time_[id] = timestamp;
+
     // std::cout << "[AddTimer]定时任务已插入" << std::endl;
     if(it == timer_set_.begin()) {
         ResetTimerfd(timestamp);
@@ -46,20 +48,29 @@ int64_t TimerQueue::AddTimer(TimerCallback cb, TimeStamp timestamp, double inter
 *   删除一个定时器任务，并依情况更新timerfd_
 */
 void TimerQueue::CancelTimer(int64_t id){
-    for(auto it = timer_set_.begin(); it != timer_set_.end(); ++ it){
-        if(it->id == id){
-            bool is_earliest = (it == timer_set_.begin());
-            timer_set_.erase(it);
-            if(!timer_set_.empty()){     //如果删除的定时器任务是最早的，且任务集里还有定时任务，则更新timerfd_
-                if(is_earliest)
-                    ResetTimerfd(timer_set_.begin()->time);
-            }else{  // 如果删除后定时器表为空，则解除timerfd
-                struct itimerspec spec{};
-                timerfd_settime(timerfd_, 0, &spec, nullptr);   //解除timerfd_，避免空触发（当timerfd设定时间为0时，则timerfd失效）
-            }
+    /*
+        根据id_to_time_找到需要取消的定时器对应的时间，
+        根据时间构造TimerEntry供timer_set_的find查找，以此避免线性查找
+    */ 
+        auto map_it = id_to_time_.find(id);
+        if(map_it == id_to_time_.end()) return;
+        auto it = timer_set_.find(TimerEntry{id, nullptr, map_it->second, 0});
+        if(it == timer_set_.end()){
+            id_to_time_.erase(map_it);
             return;
         }
-    }
+        bool is_earliest = (it == timer_set_.begin());
+        timer_set_.erase(it);
+        id_to_time_.erase(map_it);
+
+        if(!timer_set_.empty()){     //如果删除的定时器任务是最早的，且任务集里还有定时任务，则更新timerfd_
+            if(is_earliest)
+                ResetTimerfd(timer_set_.begin()->time);
+        }else{  // 如果删除后定时器表为空，则解除timerfd
+            struct itimerspec spec{};
+            timerfd_settime(timerfd_, 0, &spec, nullptr);   //解除timerfd_，避免空触发（当timerfd设定时间为0时，则timerfd失效）
+        }
+        return;
 }
 
 /*
@@ -93,6 +104,7 @@ void TimerQueue::HandleRead(){
         if(entry.interval > 0){
             entry.time = TimeStamp::AddTime(now, entry.interval);
             timer_set_.insert(entry);   // 因为GetExpired会清除定时器，因此此处要回插
+            id_to_time_[entry.id] = entry.time;
         }
     }
 
@@ -119,6 +131,6 @@ void TimerQueue::ResetTimerfd(TimeStamp timestamp){     //todo 应该加入inter
         spec.it_value.tv_sec = micros / 1000000;           // 微秒换算为秒
         spec.it_value.tv_nsec = (micros % 1000000) * 1000; // 乘1000是将微秒切换为纳秒
     }
-    timerfd_settime(timerfd_, 0, &spec, nullptr);
+    timerfd_settime(timerfd_, 0, &spec, nullptr);   // 注：flag为0，表示用的是相对时间
     // std::cout << "[ResetTimerfd]timerfd已更新" << std::endl;
 }

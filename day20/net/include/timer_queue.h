@@ -10,6 +10,7 @@
 
 class EventLoop;
 class Channel;
+
 struct TimerEntry{
     int64_t id;
     std::function<void()> cb;
@@ -55,6 +56,7 @@ private:
     std::unique_ptr<Channel> timer_channel_;
     std::set<TimerEntry, std::less<TimerEntry>> timer_set_;     //升序set
     int64_t next_id_ = 0;       //  next_id_, 用于赋给TimerEntryid
+    std::unordered_map<int64_t, TimeStamp> id_to_time_;     // id_to_time_，用于在CancelTimer时降低时间复杂度
 };
 
 /*
