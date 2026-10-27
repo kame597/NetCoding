@@ -18,8 +18,6 @@ int main(){
     *       long tv_nsec;   //纳秒
     *   };
     */
-
-    std::unique_ptr<TimerQueue> timer_queue = std::make_unique<TimerQueue>();
     
     int fd = timerfd_create(CLOCK_REALTIME, 0);     // 创建timerfd
     struct itimerspec spec{};

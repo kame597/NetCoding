@@ -11,13 +11,13 @@
 
 class Epoller;
 class Channel;
+class TimerQueue;
 
 class EventLoop{
 public:
     DISALLOW_COPY_AND_MOVE(EventLoop);
     EventLoop();
     ~EventLoop();
-
     void Loop();
     void UpdateChannel(Channel*) const;
     void DeleteChannel(Channel*) const;
@@ -36,6 +36,11 @@ public:
     // 响应唤醒
     void HandleWakeUp();
 
+    int64_t RunAfter(double delay, std::function<void()> cb);
+    int64_t RunEvery(double interval, std::function<void()> cb);
+    void CancelTimer(int64_t id);
+
+
 private:
     std::unique_ptr<Epoller> poller_;
     std::vector<std::function<void()>> pending_functors_;    //待处理任务队列
@@ -46,4 +51,6 @@ private:
 
     bool calling_functors_;
     pid_t tid_;     //  存储当前线程的tid
+
+    std::unique_ptr<TimerQueue> timer_queue_;
 };

@@ -93,7 +93,7 @@ std::string HttpResponse::ToString(bool keep_alive)const{
     if(status_code_ != StatusCode::k204NoContent)   // 204的语义就是不存在content-length，因此需要过滤204状态码
         str += "Content-Length: " + std::to_string(body_.size()) + crlf;
     if(keep_alive)
-        str += "Connection: keep_alive\r\n";     // 假设使用的是短连接
+        str += "Connection: keep-alive\r\n";     // 假设使用的是短连接
     else
         str += "Connection: close\r\n";
 

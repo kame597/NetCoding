@@ -2,6 +2,8 @@
 #include "event_loop.h"
 #include "channel.h"
 #include <unistd.h>
+#include "utils.h"
+#include "iostream"
 
 
 TimerQueue::TimerQueue(EventLoop* loop) :
@@ -10,6 +12,7 @@ TimerQueue::TimerQueue(EventLoop* loop) :
     // TFD_CLOEXEC —— 执行 exec 时自动关闭，不会泄露给新程序
     timerfd_(timerfd_create(CLOCK_REALTIME, TFD_NONBLOCK | TFD_CLOEXEC)),
     timer_channel_(std::make_unique<Channel>(timerfd_, loop)){
+        errif(timerfd_ == -1, "timerfd创建失败");
         timer_channel_->set_read_callback(std::bind(&TimerQueue::HandleRead, this));
         timer_channel_->EnableRead();
 }
@@ -29,8 +32,11 @@ int64_t TimerQueue::AddTimer(TimerCallback cb, TimeStamp timestamp, double inter
     TimerEntry entry{id, std::move(cb), timestamp, interval};
     
     auto it = timer_set_.insert(entry).first;   // 依赖set的排序性，判断插入的定时器是否是最早的，如果是，则更新timerfd
-    if(it == timer_set_.begin()) 
+    // std::cout << "[AddTimer]定时任务已插入" << std::endl;
+    if(it == timer_set_.begin()) {
         ResetTimerfd(timestamp);
+        // std::cout << "[AddTimer]定时器已重置" << std::endl;
+    }
     
     return id;  //返回添加的timer的id
 }
@@ -44,9 +50,10 @@ void TimerQueue::CancelTimer(int64_t id){
         if(it->id == id){
             bool is_earliest = (it == timer_set_.begin());
             timer_set_.erase(it);
-            if(is_earliest && !timer_set_.empty()){     //如果删除的定时器任务是最早的，且任务集里还有定时任务，则更新timerfd_
-                ResetTimerfd(timer_set_.begin()->time);
-            }else{
+            if(!timer_set_.empty()){     //如果删除的定时器任务是最早的，且任务集里还有定时任务，则更新timerfd_
+                if(is_earliest)
+                    ResetTimerfd(timer_set_.begin()->time);
+            }else{  // 如果删除后定时器表为空，则解除timerfd
                 struct itimerspec spec{};
                 timerfd_settime(timerfd_, 0, &spec, nullptr);   //解除timerfd_，避免空触发（当timerfd设定时间为0时，则timerfd失效）
             }
@@ -72,6 +79,7 @@ std::vector<TimerEntry> TimerQueue::GetExpired(TimeStamp now)
 *   timerfd的回调。获取已到期的定时任务并执行其绑定回调
 */
 void TimerQueue::HandleRead(){
+    // std::cout << "[HandleRead]已执行" << std::endl;
     uint64_t exp;
     // 返回值n表示实际读到的字节数。timerfd到期后，会把到期次数写成一个8字节的uint64，因此成功时n = 8(sizeof(exp))
     ssize_t n = read(timerfd_, &exp, sizeof(exp));  
@@ -83,7 +91,7 @@ void TimerQueue::HandleRead(){
     for(auto& entry : expired){
         entry.cb();
         if(entry.interval > 0){
-            entry.time = TimeStamp::AddTime(TimeStamp::Now(), entry.interval);
+            entry.time = TimeStamp::AddTime(now, entry.interval);
             timer_set_.insert(entry);   // 因为GetExpired会清除定时器，因此此处要回插
         }
     }
@@ -112,4 +120,5 @@ void TimerQueue::ResetTimerfd(TimeStamp timestamp){     //todo 应该加入inter
         spec.it_value.tv_nsec = (micros % 1000000) * 1000; // 乘1000是将微秒切换为纳秒
     }
     timerfd_settime(timerfd_, 0, &spec, nullptr);
+    // std::cout << "[ResetTimerfd]timerfd已更新" << std::endl;
 }

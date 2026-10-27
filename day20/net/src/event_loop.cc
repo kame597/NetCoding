@@ -1,9 +1,11 @@
 #include "event_loop.h"
 #include "epoller.h"
 #include "channel.h"
+#include "timer_queue.h"
+#include "timestamp.h"
 
 #include <sys/eventfd.h>
-
+#include <iostream>
 #include <unistd.h>
 #include <assert.h>
 
@@ -19,6 +21,8 @@ EventLoop::EventLoop(){
 
     wakeup_channel_->set_read_callback(std::bind(&EventLoop::HandleWakeUp, this));
     wakeup_channel_->EnableRead();
+
+    timer_queue_ = std::make_unique<TimerQueue>(this);
 }
 
 EventLoop::~EventLoop(){}
@@ -89,6 +93,24 @@ void EventLoop::HandleWakeUp(){
     ssize_t read_size = ::read(wakeup_fd_, &read_one_byte, sizeof(read_one_byte));
     assert(read_size == sizeof(read_one_byte));
     return;
+}
+
+
+int64_t EventLoop::RunAfter(double delay, std::function<void()> cb)
+{
+    // std::cout << "[RunAfter]执行" << std::endl;
+    auto timer_id = timer_queue_->AddTimer(cb, TimeStamp::AddTime(TimeStamp::Now(), delay), 0);
+    return timer_id;
+}
+
+int64_t EventLoop::RunEvery(double interval, std::function<void()> cb)
+{
+    auto timer_id = timer_queue_->AddTimer(cb, TimeStamp::Now(), interval);
+    return timer_id;
+}
+
+void EventLoop::CancelTimer(int64_t id){
+    timer_queue_->CancelTimer(id);
 }
 
 void EventLoop::UpdateChannel(Channel* channel) const {

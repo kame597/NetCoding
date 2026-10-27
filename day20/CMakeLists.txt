@@ -38,3 +38,6 @@ target_link_libraries(http_server_test PRIVATE webServer)
 
 add_executable(timerfd_test test/timerfd_test.cpp)
 target_link_libraries(timerfd_test PRIVATE webServer)
+
+add_executable(timer_test test/timer_test.cpp)
+target_link_libraries(timer_test PRIVATE webServer)
