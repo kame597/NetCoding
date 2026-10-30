@@ -3,6 +3,8 @@
 #include "channel.h"
 #include "utils.h"
 
+#include <sys/socket.h>
+
 #include <unistd.h>
 #include <iostream>
 #include <cstring>
@@ -44,6 +46,8 @@ void TcpConnection::ConnectionDestruct(){
 
 void TcpConnection::HandleMessage(){
     Read();
+    if(conn_state_ != ConnectionState::DisConnected)
+        ResetIdleTimer(); // 如果该链接有读取，且读取成功，连接还在，则重置定时器
     if(on_message_)
         on_message_(shared_from_this(), &read_buffer_);
 }
@@ -56,11 +60,50 @@ void TcpConnection::HandleClose(){
         *   避免关闭后到DeleteChannel摘除fd的窗口期内，epoll仍触发读事件导致空转
         */
         conn_channel_->DisableRead();   
+        CancelIdleTimer();  //取消定时器，删掉RunAfter存的TcpConnection引用
         if(on_close_)
             on_close_(shared_from_this());
     }
 }
 
+void TcpConnection::ForceClose(){
+    if(conn_state_ != ConnectionState::DisConnected){   //幂等保护，防止多次调用
+        HandleClose();
+        if(shutdown(connfd_, SHUT_WR) == -1) // shutdown可以明确给对端发FIN，并置为半关闭状态
+            std::cout << "[ForceClose]shutdown失败, fd: " << connfd_ << std::endl;
+    }
+}
+
+/*
+*   @brief
+*   启用空闲定时器，开启定时关闭任务
+*/
+void TcpConnection::EnableIdleTimeout(int seconds){
+    if(seconds <= 0) return;    // 保护，防止传入seconds = 0，导致所有立刻触发ForceClose强制断开链接
+    if(idle_timer_fd_ != -1) return;
+    conn_timeout_ = seconds;
+    idle_timer_fd_ = loop_->RunAfter(conn_timeout_, std::bind(&TcpConnection::ForceClose, shared_from_this()));
+}
+
+/*
+ *   @brief
+ *   重置空闲定时器
+ */
+void TcpConnection::ResetIdleTimer(){
+    // 先删除原有的定时器，重新发布定时任务
+    if(conn_state_ != ConnectionState::Connected) return;
+    if(conn_timeout_ <= 0) return;
+    loop_->CancelTimer(idle_timer_fd_);
+    idle_timer_fd_ = loop_->RunAfter(conn_timeout_, std::bind(&TcpConnection::ForceClose, shared_from_this()));
+    
+}
+
+void TcpConnection::CancelIdleTimer(){
+    if(idle_timer_fd_ != -1){
+        loop_->CancelTimer(idle_timer_fd_);
+        idle_timer_fd_ = -1;
+    }
+}
 
 void TcpConnection::Send(const std::string& msg){
     set_write_buf(msg.c_str());

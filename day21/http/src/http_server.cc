@@ -24,6 +24,10 @@ void HttpServer::Start(){
     tcp_server_->Start();
 }
 
+void HttpServer::SetConnTimeout(int timeout){
+    tcp_server_->set_conn_timeout_(timeout);
+}
+
 /*
 *   @brief
 *   保存业务层设定的回调，后续注入给HttpConnection，即用户（main）注册的业务逻辑

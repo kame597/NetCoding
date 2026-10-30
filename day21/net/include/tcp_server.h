@@ -33,6 +33,7 @@ public:
     void HandleNewConnection(int fd);
 
     void set_thread_nums(int thread_nums);
+    void set_conn_timeout_(int timeout);
     
 private:
     EventLoop* main_reactor_;
@@ -47,4 +48,6 @@ private:
     MessageCallback on_message_;
     CloseCallback on_close_;
     std::mutex conns_map_mutex_;  //我们需要锁来保护connections表，防止对多个线程对表同时读写
+
+    int conn_timeout_ = 60; //默认连接超时为60s
 };

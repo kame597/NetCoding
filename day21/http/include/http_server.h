@@ -23,7 +23,9 @@ public:
     ~HttpServer();
 
     void Start();
+    void SetConnTimeout(int timeout);
     void set_message_callback(HttpConnection::MessageCallback cb);
+
 
 private:
     void OnConnection(const std::shared_ptr<TcpConnection>& conn);

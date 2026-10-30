@@ -51,6 +51,12 @@ public:
 
    void HandleMessage();    //当接受到信息时，触发回调
    void HandleClose();      
+   void ForceClose();       //服务器主动关闭连接，发生在超时情景下
+
+   void EnableIdleTimeout(int seconds);
+   void ResetIdleTimer();
+   void CancelIdleTimer();
+
 
     ConnectionState conn_state()const { return conn_state_; }
     EventLoop* loop()const {return loop_;}
@@ -73,6 +79,10 @@ private:
     CloseCallback on_close_;
     MessageCallback on_message_;
     ConnectionCallback on_connection_;
+
+    // 定时器相关，用于设定服务器定时关闭任务
+    int64_t idle_timer_fd_ = -1;
+    int conn_timeout_ = 0;
 
     void ReadNonBlocking();
     void WriteNonBlocking();

@@ -48,11 +48,18 @@ void TcpServer::HandleNewConnection(int fd){
     // 创建TcpConnection对象，交付给指定的sub_reactor_
     std::shared_ptr<TcpConnection> conn = std::make_shared<TcpConnection>(sub_reactor_, fd, next_conn_id_);
 
+    std::cout << "[HandleNewConnection]新链接创建" << std::endl;
+
     // std::function<void(const std::shared_ptr<TcpConnection> &)> cb = std::bind(&TcpServer::HandleClose, this, std::placeholders::_1);
     conn->set_close_callback(std::bind(&TcpServer::HandleClose, this, std::placeholders::_1));
 
     conn->set_connection_callback(on_connection_);
     conn->set_message_callback(on_message_);
+
+    conn->loop()->RunInLoop([conn, timeout = conn_timeout_]{
+        conn->EnableIdleTimeout(timeout);
+    });
+
     connections_map_[fd] = conn;    // 此处因为用了共享指针，可以直接赋值
 
     // 更新连接的id
@@ -90,4 +97,8 @@ void TcpServer::HandleCloseInLoop(const std::shared_ptr<TcpConnection> & conn){
 
 void TcpServer::set_thread_nums(int thread_nums){
     thread_pool_->set_thread_nums(thread_nums);
+}
+
+void TcpServer::set_conn_timeout_(int timeout){
+    conn_timeout_ = timeout;
 }
