@@ -80,9 +80,9 @@ void TcpConnection::ForceClose(){
 */
 void TcpConnection::EnableIdleTimeout(int seconds){
     if(seconds <= 0) return;    // 保护，防止传入seconds = 0，导致所有立刻触发ForceClose强制断开链接
-    if(idle_timer_fd_ != -1) return;
+    if(idle_timer_id_ != -1) return;
     conn_timeout_ = seconds;
-    idle_timer_fd_ = loop_->RunAfter(conn_timeout_, std::bind(&TcpConnection::ForceClose, shared_from_this()));
+    idle_timer_id_ = loop_->RunAfter(conn_timeout_, std::bind(&TcpConnection::ForceClose, shared_from_this()));
 }
 
 /*
@@ -93,15 +93,15 @@ void TcpConnection::ResetIdleTimer(){
     // 先删除原有的定时器，重新发布定时任务
     if(conn_state_ != ConnectionState::Connected) return;
     if(conn_timeout_ <= 0) return;
-    loop_->CancelTimer(idle_timer_fd_);
-    idle_timer_fd_ = loop_->RunAfter(conn_timeout_, std::bind(&TcpConnection::ForceClose, shared_from_this()));
+    loop_->CancelTimer(idle_timer_id_);
+    idle_timer_id_ = loop_->RunAfter(conn_timeout_, std::bind(&TcpConnection::ForceClose, shared_from_this()));
     
 }
 
 void TcpConnection::CancelIdleTimer(){
-    if(idle_timer_fd_ != -1){
-        loop_->CancelTimer(idle_timer_fd_);
-        idle_timer_fd_ = -1;
+    if(idle_timer_id_ != -1){
+        loop_->CancelTimer(idle_timer_id_);
+        idle_timer_id_ = -1;
     }
 }
 

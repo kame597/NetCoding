@@ -81,7 +81,7 @@ private:
     ConnectionCallback on_connection_;
 
     // 定时器相关，用于设定服务器定时关闭任务
-    int64_t idle_timer_fd_ = -1;
+    int64_t idle_timer_id_ = -1;
     int conn_timeout_ = 0;
 
     void ReadNonBlocking();
