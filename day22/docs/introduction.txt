@@ -1,0 +1,342 @@
+========================================================================
+WebServer 项目介绍
+========================================================================
+
+一、项目目标
+------------------------------------------------------------------------
+从零实现一个基于 Reactor 模式的多线程 HTTP 服务器。
+
+整体采用「主从 Reactor」架构：
+    - 主 Reactor（main reactor）只负责 accept 新连接
+    - 子 Reactor（sub reactor）负责已建立连接的读写事件
+    - 连接的读写全部在「该连接所属的子线程」中完成，避免加锁
+
+分层设计，自下而上共三层：
+
+    base/   基础设施层：线程封装、时间戳、工具宏、通用定义
+    net/    TCP 网络层：事件循环、Channel、连接管理、线程池、定时器
+    http/   HTTP 协议层：报文解析、响应构造、连接驱动
+
+依赖方向严格「自下而上」：
+    http 依赖 net，net 依赖 base，反向不依赖。
+    下层通过「回调」把控制权交给上层（控制反转），
+    因此 net 层不知道 http 层的存在，可以复用于其他协议。
+
+
+二、目录结构
+------------------------------------------------------------------------
+base/include/
+    common.h            通用宏（DISALLOW_COPY_AND_MOVE）、错误处理 errif
+    current_thread.h    当前线程信息（tid 等）
+    timestamp.h         时间戳封装（微秒精度，Now / AddTime / operator<）
+    utils.h             工具函数
+
+net/include/
+    event_loop.h            事件循环：Loop / RunInLoop / QueueInLoop / 定时器接口
+    epoller.h               epoll 的封装：Poll / UpdateChannel / DeleteChannel
+    channel.h               fd 的事件封装：读/写回调、Tie 弱引用保护
+    acceptor.h              监听 socket：Bind / Listen / AcceptConnection
+    buffer.h                读写缓冲区：Append / Retrieve / FindCRLF
+    tcp_connection.h        单个 TCP 连接：读写、关闭、空闲超时、状态管理
+    tcp_server.h            服务器：连接表管理、线程池调度、超时配置
+    event_loop_thread.h     一个线程 + 一个 EventLoop
+    event_loop_thread_pool.h 子 Reactor 线程池，轮询分配连接
+    thread_pool.h           通用线程池
+    timer_queue.h           定时器队列：timerfd + 有序 set + id 索引
+
+http/include/
+    http_request.h      HTTP 请求（DTO，纯数据容器）
+    http_response.h     HTTP 响应（状态码、首部、正文、序列化）
+    http_context.h      HTTP 报文解析器（有限状态机）
+    http_connection.h   HTTP 连接驱动（包裹 TcpConnection）
+    http_server.h       HTTP 服务器（回调转发、连接表管理、超时配置）
+
+test/
+    timed_close_test.cpp  端到端验证：GET 响应 + 空闲超时主动关闭
+
+
+三、核心组件说明
+------------------------------------------------------------------------
+
+1. EventLoop（事件循环）
+   每个线程一个 EventLoop，内部持有 Epoller、一个 wakeup_channel_
+   和一个 timer_queue_。
+   - Loop()            主循环：epoll_wait → 分发事件 → 执行待办任务
+   - RunInLoop(func)   若在所属线程则直接执行，否则投递到队列
+   - QueueInLoop(func) 把任务放入待办队列，并唤醒 eventfd
+   - DoPendingFunctors() 执行待办队列中的任务
+   - RunAfter / RunEvery / CancelTimer  转发给 TimerQueue
+
+   待办队列 + eventfd 唤醒，是「跨线程投递任务」的关键机制。
+
+2. Channel（事件封装）
+   把一个 fd 和它关心的事件、回调绑定在一起。
+   - EnableRead / EnableWrite / DisableRead  修改监听事件
+   - HandleEvent()  根据 ready_events_ 分发到读/写回调
+   - Tie(ptr)       绑定一个 weak_ptr，用于延迟销毁
+
+   Tie 存的是 weak_ptr，不增加引用计数；
+   只在 HandleEvent 期间 lock() 提升为 shared_ptr，
+   保证回调执行期间对象不被析构。
+
+3. TcpConnection（连接对象）
+   - ConnectionEstablish()  Tie + EnableRead + 触发连接回调
+   - HandleMessage()        Read + 重置空闲定时器 + 触发消息回调
+   - HandleClose()          DisableRead + 撤销空闲定时器 + 触发关闭回调（幂等）
+   - ForceClose()           HandleClose + shutdown(SHUT_WR)，服务器主动关闭
+   - ConnectionDestruct()   DeleteChannel，从 epoll 摘除 fd
+   - ReadNonBlocking()      循环 read 直到 EAGAIN，累积到 read_buffer_
+   - WriteNonBlocking()     循环 write 直到写完或 EAGAIN
+
+   空闲超时接口：
+   - EnableIdleTimeout(sec) 建连后注册一次性定时器，到期回调 ForceClose
+   - ResetIdleTimer()       每次读到数据后「取消 + 重发」，实现滑动续期
+   - CancelIdleTimer()      关闭时撤销，解除定时器持有的 shared_ptr
+
+   注意：read_buffer_ 不清空（累积缓冲区），
+   这是为了配合 HTTP 的半包处理。
+
+4. TcpServer（服务器）
+   - HandleNewConnection(fd) 创建 TcpConnection，分配到子 Reactor，
+                             并 RunInLoop 到子线程注册空闲超时
+   - HandleClose(conn)       先转发上层 on_close_，再投递 HandleCloseInLoop
+   - HandleCloseInLoop(conn) 在 main reactor 中删表，再投递析构任务
+   - set_conn_timeout_(sec)  配置超时秒数，默认 60s，0 表示不启用
+
+   连接表 connections_map_ 的增删都在 main reactor 线程中完成。
+
+5. HttpContext（报文解析）
+   采用「有限状态机 + 循环」的方式解析：
+   保持一个 while 循环，持续判断单步解析的状态，来切换当前解析状态。
+   例如：如果解析请求行的结果为 kOk，则切换到 kExpectHeaderLine 状态，
+   下一次循环就会进入解析首部行的函数中。
+
+   状态流转：
+       kExpectRequestLine → kExpectHeaderLine → kExpectBody → kGotAll
+
+   单步解析结果有三种：
+       kOk       本步完成，切换状态
+       kNeedMore 数据不完整，返回等待更多数据（半包）
+       kError    报文非法
+
+   解析结果（ParseResult）同样有三种：
+       kGotAll   完整解析出一个请求
+       kNeedMore 数据不够，等下次
+       kError    报文错误
+
+6. HttpConnection（连接驱动）
+   - OnMessage(buf)  while 循环 ParseRequest，处理粘包与半包
+   - HandleRequest   构造 HttpResponse，交业务回调填装
+   - SendResponse    ToString(true) 序列化后经 TcpConnection::Send 发出
+
+   状态标记：
+   - should_close_     报文错误或需关闭时置位，循环结束后统一 HandleClose
+   - keepalive_count_  预留字段，长连接计数（当前未启用）
+
+   当前连接语义：默认长连接。
+   SendResponse 固定以 ToString(true) 序列化，响应头始终为
+   Connection: keep-alive；连接的生命周期由空闲超时兜底，而非请求计数。
+
+7. HttpResponse（响应构造）
+   ToString(bool keep_alive) 是序列化核心，由框架接管两个关键首部：
+   - Content-Length  由 body_ 长度计算，过滤业务层写入的值
+   - Connection      由 keep_alive 参数决定，过滤业务层写入的值
+   204 No Content 按语义不输出 Content-Length。
+
+8. TimerQueue（定时器队列）
+   EventLoop 持有 TimerQueue，TimerQueue 持有 timerfd_ 和对应的 Channel。
+   timerfd 到期变为可读，经 Channel 回调进入 HandleRead，
+   从而把「定时事件」统一成「IO 事件」，复用同一套 epoll 分发机制。
+
+   对外接口（由 EventLoop 转发）：
+   - RunAfter(delay, cb)       delay 秒后执行一次，返回 timer_id
+   - RunEvery(interval, cb)    每 interval 秒执行一次，返回 timer_id
+   - CancelTimer(id)           取消指定定时器
+
+   内部数据结构：
+   - timer_set_    std::set<TimerEntry>，按 (time, id) 升序，队首即最早到期
+   - id_to_time_   std::unordered_map<id, TimeStamp>，供 CancelTimer 快速定位
+   - next_id_      自增 id 分配器
+
+   TimerEntry 的排序规则：time 相同则比 id。
+   这既保证同一时刻多个定时器的顺序稳定，
+   也让 set::find 能用 {id, nullptr, time, 0} 构造的查找键精确命中。
+
+   关键设计：
+   - timerfd 使用 CLOCK_MONOTONIC，不受 NTP 校时 / 手动改时间影响
+   - 只有新定时器成为队首时才 ResetTimerfd，避免无谓的系统调用
+   - 周期定时器在 HandleRead 中回插，而非使用 timerfd 的 it_interval
+
+
+四、请求处理流程（一次完整 GET）
+------------------------------------------------------------------------
+  客户端
+    │  1. TCP 三次握手
+    ▼
+  主 Reactor ── accept ──► TcpServer::HandleNewConnection
+    │                          │
+    │                          ├─ next_loop() 选一个子 Reactor
+    │                          ├─ 创建 TcpConnection
+    │                          ├─ 注入 close/message/connect 回调
+    │                          ├─ RunInLoop 到子线程注册空闲超时
+    │                          └─ connections_map_[fd] = conn
+    ▼
+  子 Reactor ── epoll 可读 ──► TcpConnection::HandleMessage
+    │                          │
+    │                          ├─ Read() 累积到 read_buffer_
+    │                          ├─ ResetIdleTimer() 滑动续期
+    │                          └─ on_message_ → HttpServer::OnMessage
+    ▼
+  HttpConnection::OnMessage
+    │
+    ├─ while 循环调用 context_.ParseRequest(buf)   ← 处理粘包
+    │     ├─ kGotAll   → HandleRequest + Reset，继续循环
+    │     ├─ kNeedMore → break，等下次数据          ← 处理半包
+    │     └─ kError    → should_close_ = true，break
+    │
+    └─ HandleRequest → 业务回调填装 resp → SendResponse
+                            │
+                            └─ conn_->Send(ToString(true))
+
+  默认长连接：响应头为 Connection: keep-alive，连接不随响应结束而关闭，
+  客户端可继续在同一连接上发送下一个请求。
+  连接终止有两种途径：
+  1) 客户端主动关闭：服务器 read 返回 0，进入关闭流程；
+  2) 空闲超时：客户端 conn_timeout_ 秒内无数据，服务器 ForceClose 主动断开。
+
+
+五、连接管理
+------------------------------------------------------------------------
+新建连接：见 docs/map/newConnection.md
+关闭连接：见 docs/map/deleteConnection.md
+整体类图：见 docs/map/architecture.md
+
+关闭链路要点：
+  TcpConnection::HandleClose
+      → DisableRead + CancelIdleTimer （摘除读监听、撤销定时器）
+      → TcpServer::HandleClose         （转发上层 + 投递到 main）
+      → HttpServer::OnClose            （删除 http_conns_ 中的条目）
+      → TcpServer::HandleCloseInLoop   （删除 connections_map_）
+      → TcpConnection::ConnectionDestruct（DeleteChannel，摘除 fd）
+      → 引用计数归零，TcpConnection 析构
+
+  ForceClose 在 HandleClose 之后追加 shutdown(fd, SHUT_WR)：
+  关闭「本端 → 对端」的写方向并发出 FIN，让对端立即感知服务器不再发送数据。
+  相比直接 close()，它不会因接收缓冲区尚有未读数据而立刻回 RST，
+  对端若配合关闭，即可走完干净的四次挥手；
+  且 shutdown 不释放 fd，fd 的释放仍由 ConnectionDestruct 统一接管。
+
+  注意：SHUT_WR 之后若对端仍继续发数据，内核会回 RST。
+  这在超时关闭场景下是预期行为，明确告知对端连接已作废。
+  且 HandleClose 中已 DisableRead、连接随后被析构，
+  本端不再消费任何入站数据，不存在「半关闭后还能继续读」的语义。
+
+  两次「延迟」的原因：
+  1) 不能在 HandleEvent 的调用栈中析构对象，否则返回后访问已释放内存；
+  2) 连接表的增删必须在 main reactor 线程中，保证线程安全。
+
+
+六、空闲超时设计
+------------------------------------------------------------------------
+1. 为什么用定时器而不是 SO_RCVTIMEO
+   SO_RCVTIMEO 只能让 read 超时返回，无法表达「空闲多久后关闭连接」，
+   也无法在关闭时执行完整的 HandleClose 链路。
+   用 RunAfter 注册一次性定时器，到期回调直接走 ForceClose，
+   复用已有的关闭流程，不新增任何状态机分支。
+
+2. 滑动续期：取消 + 重发
+   ResetIdleTimer() 先 CancelTimer(idle_timer_fd_)，再 RunAfter 重新注册。
+   这样每次收到数据，超时窗口都从「现在」重新起算，
+   语义等价于「连接空闲超过 conn_timeout_ 秒则关闭」。
+   长连接下，只要客户端持续发请求，连接就不会被超时回收。
+
+3. 定时器持有 shared_ptr 的隐患与解除
+   RunAfter 的回调用 std::bind 捕获了 shared_from_this()，
+   定时器条目本身持有一个 TcpConnection 的强引用。
+   若连接已关闭而定时器未撤销，对象会一直存活到定时器到期。
+   因此 HandleClose 中必须 CancelIdleTimer()，
+   让引用计数及时归零，ConnectionDestruct 才能正常析构。
+
+4. 线程归属
+   EnableIdleTimeout 通过 RunInLoop 投递到连接所属的子 Reactor 执行，
+   保证 timer_queue_ 的读写只发生在该 EventLoop 线程内，无需加锁。
+
+5. 参数保护
+   EnableIdleTimeout 对 seconds <= 0 直接返回，
+   避免「超时为 0」导致所有连接建连后立刻被 ForceClose。
+   idle_timer_fd_ != -1 时也直接返回，防止重复注册。
+
+6. 已知限制
+   - 超时精度受 timerfd 与 TimeStamp 差值计算影响，为毫秒级
+   - 周期定时器在自己的回调里 CancelTimer 自己会失效：
+     此时该条目已被 GetExpired 移出 set，CancelTimer 找不到它，
+     回调返回后又会把它回插，相当于「取消被忽略」。
+   - ResetTimerfd 用 realtime 差值计算间隔，
+     若 NTP 恰好在两次 ResetTimerfd 之间跳变，算出的间隔会失真。
+     窗口极短（微秒级），实践中可接受。
+
+
+七、设计要点
+------------------------------------------------------------------------
+1. 控制反转（IoC）
+   回调的精髓是控制反转：
+   上层负责策略（决定做什么），下层负责行为（决定何时触发）。
+   控制流在注册时从上往下，事件与请求数据在触发时从下往上，
+   响应数据则从上往下写回。
+
+2. 依赖倒置
+   下层依赖抽象（std::function 回调），上层注入具体策略。
+   例如 TcpConnection 只依赖 on_message_ 这个抽象，
+   具体调用由上层注册决定，因此 net 层不依赖 http 层。
+
+3. 单一职责
+   HttpServer      只负责连接管理
+   HttpConnection  只负责协议流程控制
+   HttpContext     只负责报文解析
+   TcpConnection   只负责连接生命周期与读写
+   TimerQueue      只负责定时调度，不关心回调内容
+
+4. 延迟销毁
+   通过「待办队列 + weak_ptr 保护 + 引用计数」三者配合，
+   保证对象在所有回调执行完毕后才析构，避免悬空指针。
+   定时器持有强引用时，必须靠 CancelTimer 主动解除。
+
+5. 事件抽象的统一
+   timerfd 把时间维度的事件映射成 fd 的可读事件，
+   使 EventLoop 只需处理「fd 就绪」这一种抽象。
+   新增定时能力不需要改动 Epoller / Channel / Loop 的任何代码，
+   只增加一个 Channel 注册即可。
+
+6. 框架接管关键首部
+   Content-Length 与 Connection 由 HttpResponse 统一生成，
+   业务回调即使写入也会被过滤。
+   避免「长度与正文不一致」和「连接语义前后矛盾」两类错误。
+
+
+八、当前进度
+------------------------------------------------------------------------
+已完成：
+  [x] base 基础设施（含 TimeStamp 微秒时间戳）
+  [x] net 层：EventLoop / Epoller / Channel / Acceptor
+  [x] net 层：TcpConnection / TcpServer / 线程池
+  [x] http 层：HttpRequest / HttpResponse / HttpContext
+  [x] http 层：HttpConnection / HttpServer
+  [x] 端到端 GET 请求（curl 验证通过）
+  [x] 粘包处理（while 循环 + Reset）
+  [x] 半包处理（kNeedMore + 累积缓冲区，telnet 验证通过）
+  [x] 定时器：timerfd + TimerQueue（RunAfter / RunEvery / CancelTimer）
+  [x] 定时器：CLOCK_MONOTONIC 抗时钟跳变
+  [x] 定时器：CancelTimer 经 id 索引做到 O(log n)
+  [x] 空闲超时：EnableIdleTimeout / ResetIdleTimer 滑动续期
+  [x] 服务器主动关闭：ForceClose（HandleClose + shutdown SHUT_WR）
+  [x] 超时配置：HttpServer::SetConnTimeout 透传至 TcpServer
+  [x] 响应首部接管：Content-Length / Connection 由框架生成
+  [x] 默认长连接：响应头固定 Connection: keep-alive
+  [x] 抓包验证：分片请求续读、10 秒精确超时、四次挥手无 RST
+
+待完成：
+  [ ] 写事件注册（WriteNonBlocking 遇 EAGAIN 后未注册 EPOLLOUT，
+      大响应可能丢失剩余数据）
+  [ ] keep-alive 请求计数（keepalive_count_ 已预留，尚未接入上限控制）
+  [ ] 静态资源 / 路由分发
+  [ ] 压测与并发验证
