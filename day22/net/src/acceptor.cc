@@ -43,7 +43,7 @@ void Acceptor::Bind(const char* ip, const int port){
     addr.sin_family = AF_INET;
     inet_pton(AF_INET, ip, &addr.sin_addr);
     addr.sin_port = htons(port);
-    errif((::bind(listenfd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 1),
+    errif((::bind(listenfd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == -1),
              "监听socket地址绑定失败");
 }
 
@@ -55,8 +55,6 @@ void Acceptor::Listen(){
 
 /*
 *   AcceptConnection函数
-*   负责接收连接，此处用while循环，防止在就绪队列为空的情况下调用accept导致错误
-*   先accept，如果成功，则根据clnt_fd创建连接socket，并将其移动到
 */
 void Acceptor::AcceptConnection(){
     struct sockaddr_in client{};
