@@ -44,3 +44,6 @@ target_link_libraries(timer_test PRIVATE webServer)
 
 add_executable(timed_close_test test/timed_close_test.cpp)
 target_link_libraries(timed_close_test PRIVATE webServer)
+
+add_executable(log_test test/log_test.cpp)
+target_link_libraries(log_test PRIVATE webServer)

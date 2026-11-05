@@ -37,7 +37,10 @@ namespace current_thread{
         return t_cachedTid;
     }
 
-    inline const char* tid_string(){return t_formattedTid; }
+    inline const char* tid_string(){
+        if(t_cachedTid == 0) CacheTid();
+        return t_formattedTid; 
+    }
     inline int tid_string_length(){return t_formattedTidLength; }
 
 }   //namespace current_thread

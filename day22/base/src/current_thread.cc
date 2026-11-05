@@ -18,7 +18,7 @@ namespace current_thread{
             *   %5d 是右对齐，宽度为5的整数，用于打印日志
             *   返回值为实际写入的字符数，不包含结尾的\0，存入t_formattedTidLength
             */
-            t_formattedTidLength = snprintf(t_formattedTid, sizeof(t_formattedTid), "%5d ", t_cachedTid);
+            t_formattedTidLength = snprintf(t_formattedTid, sizeof(t_formattedTid), "%5d", t_cachedTid);
         }
     }
 

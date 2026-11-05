@@ -6,12 +6,12 @@
 #include "tcp_connection.h"
 #include "utils.h"
 #include "current_thread.h"
+#include "logger.h"
 
 #include <memory>
 #include <utility>
 #include <functional>
 #include <unistd.h>
-#include <iostream>
 #include <cerrno>
 
 
@@ -48,7 +48,7 @@ void TcpServer::HandleNewConnection(int fd){
     // 创建TcpConnection对象，交付给指定的sub_reactor_
     std::shared_ptr<TcpConnection> conn = std::make_shared<TcpConnection>(sub_reactor_, fd, next_conn_id_);
 
-    std::cout << "[HandleNewConnection]新链接创建" << std::endl;
+    LOG_INFO << "[HandleNewConnection]新链接创建, fd: " << fd;
 
     // std::function<void(const std::shared_ptr<TcpConnection> &)> cb = std::bind(&TcpServer::HandleClose, this, std::placeholders::_1);
     conn->set_close_callback(std::bind(&TcpServer::HandleClose, this, std::placeholders::_1));
@@ -86,8 +86,8 @@ void TcpServer::HandleClose(const std::shared_ptr<TcpConnection> & conn){
 *   执行完HandleEvent，才会执行在延时队列里的ConnectionDestruct，而ConnectionDestruct既可以清除channel，在函数返回后引用归零，还会清除TcpConnection
 */
 void TcpServer::HandleCloseInLoop(const std::shared_ptr<TcpConnection> & conn){
-    std::cout << current_thread::tid()  << 
-    " TcpServer::HandleCloseInLoop - Remove connection id: " <<  conn->id() << " and fd: " << conn->fd() << std::endl;
+    LOG_DEBUG << "TcpServer::HandleCloseInLoop - Remove connection id: "
+              << conn->id() << " and fd: " << conn->fd();
 
     errif(connections_map_.find(conn->fd()) == connections_map_.end(), "[删除客户端]该socketfd无效, 无法删除");
     connections_map_.erase(conn->fd());

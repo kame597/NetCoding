@@ -4,6 +4,7 @@
 // fixed_buffer是一个栈上的固定大小缓冲区，供LogStream拼接单条日志使用
 
 const int kSmallBuffer = 4000;  // 全局常量，表示单条日志缓冲区的大小，即FixedBuffer的模版参数，定义在一处方便多处使用和修改
+const int kMaxNumericSize = 48; // 单个数字格式化可能占用的最大字节数
 
 template<int SIZE>
 class FixedBuffer{
@@ -14,11 +15,11 @@ public:
 
     /*
     *   @brief
-    *   往缓冲区追加len字节的数据，空间不足时会整条日志丢弃，而不截断处理
+    *   往缓冲区追加len字节的数据，空间不足时会丢弃本次的日志追加内容
     */
-    void Append(const char* buf, size_t len){
+    void Append(const char* data, size_t len){
         if(AvailBytes() >= len){
-            memcpy(cur_, buf, len);
+            memcpy(cur_, data, len);
             cur_ += len;
         }
     }

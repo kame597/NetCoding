@@ -2,11 +2,11 @@
 #include "event_loop.h"
 #include "channel.h"
 #include "utils.h"
+#include "logger.h"
 
 #include <sys/socket.h>
 
 #include <unistd.h>
-#include <iostream>
 #include <cstring>
 #include <cerrno>
 
@@ -70,7 +70,7 @@ void TcpConnection::ForceClose(){
     if(conn_state_ != ConnectionState::DisConnected){   //幂等保护，防止多次调用
         HandleClose();
         if(shutdown(connfd_, SHUT_WR) == -1) // shutdown可以明确给对端发FIN，并置为半关闭状态
-            std::cout << "[ForceClose]shutdown失败, fd: " << connfd_ << std::endl;
+            LOG_ERROR << "[ForceClose]shutdown失败, fd: " << connfd_;
     }
 }
 
@@ -149,12 +149,12 @@ void TcpConnection::ReadNonBlocking(){
             break;
         }
         else if(read_bytes == 0){    //客户端断开链接
-            std::cout << "客户端:" << connfd_ <<"断开链接" << std::endl;
+            LOG_INFO << "客户端:" << connfd_ << "断开链接";
             HandleClose();
             break;
         }
         else{
-            std::cout << "客户端:" << connfd_ << "发生其他错误" << std::endl;
+            LOG_ERROR << "客户端:" << connfd_ << "读取出错: " << strerror(errno);
             HandleClose();
             break;
         }
@@ -183,7 +183,7 @@ void TcpConnection::WriteNonBlocking(){
             break;
         }
         else if(write_bytes == -1){
-            std::cout << "客户端:" << connfd_ << "发生其他错误" << std::endl;
+            LOG_ERROR << "客户端:" << connfd_ << "写取出错: " << strerror(errno);
             HandleClose();
             break;
         }

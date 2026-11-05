@@ -14,8 +14,8 @@ inline const char* level_to_string(LogLevel level){
     switch (level)
     {
     case LogLevel::kDebug: return "DEBUG";
-    case LogLevel::kInfo:  return "INFO ";
-    case LogLevel::kWarn:  return "WARN ";
+    case LogLevel::kInfo:  return "INFO";
+    case LogLevel::kWarn:  return "WARN";
     case LogLevel::kError: return "ERROR";
     case LogLevel::kFatal: return "FATAL";
     default:    return "UNKNOWN";
