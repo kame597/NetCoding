@@ -27,6 +27,7 @@ public:
     static TimeStamp AddTime(const TimeStamp& timestamp, double add_seconds);
     static TimeStamp Now();
     std::string ToFormattedString() const;
+    size_t FormatTo(char* buf, size_t size) const;
     int64_t microseconds() const;
 
 private:

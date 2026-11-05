@@ -26,10 +26,15 @@ WebServer 项目介绍
 二、目录结构
 ------------------------------------------------------------------------
 base/include/
-    common.h            通用宏（DISALLOW_COPY_AND_MOVE）、错误处理 errif
-    current_thread.h    当前线程信息（tid 等）
-    timestamp.h         时间戳封装（微秒精度，Now / AddTime / operator<）
-    utils.h             工具函数
+    common.h            通用宏（DISALLOW_COPY_AND_MOVE）
+    current_thread.h    当前线程信息（tid 等，tid_string 供日志使用）
+    timestamp.h         时间戳封装（微秒精度，Now / AddTime / FormatTo）
+    utils.h             工具函数、错误处理 errif（内部走 LOG_FATAL）
+    log_level.h         日志等级枚举与 level_to_string
+    fixed_buffer.h      固定大小栈缓冲区，供 LogStream 拼接使用
+    source_file.h       从 __FILE__ 中截取文件名部分
+    log_stream.h        日志流：重载 operator<< 把各类数据追加进缓冲区
+    logger.h            日志器：前缀格式化、等级过滤、可替换输出/刷新函数
 
 net/include/
     event_loop.h            事件循环：Loop / RunInLoop / QueueInLoop / 定时器接口
@@ -53,6 +58,7 @@ http/include/
 
 test/
     timed_close_test.cpp  端到端验证：GET 响应 + 空闲超时主动关闭
+    log_test.cpp          日志验证：等级过滤、输出计数、多线程不交错、文件输出
 
 
 三、核心组件说明
@@ -166,6 +172,46 @@ test/
    - timerfd 使用 CLOCK_MONOTONIC，不受 NTP 校时 / 手动改时间影响
    - 只有新定时器成为队首时才 ResetTimerfd，避免无谓的系统调用
    - 周期定时器在 HandleRead 中回插，而非使用 timerfd 的 it_interval
+
+9. Logger（日志）
+   使用方式：
+       LOG_INFO << "fd=" << fd;
+   输出格式：
+       [INFO] 2026-11-05 14:37:35.312882 536289 tcp_connection.cc-152: fd=8
+       （等级、时间、线程 tid、文件-行号、正文）
+
+   等级：kDebug / kInfo / kWarn / kError / kFatal，默认输出 kDebug 及以上。
+
+   组件分工：
+   - SourceFile        从 __FILE__ 截取文件名，避免打印完整路径
+   - FixedBuffer       栈上 4000 字节缓冲区，避免每条日志一次堆分配
+   - LogStream         重载 operator<<，把字符串/整数/TimeStamp 追加进缓冲区
+   - Logger            构造时拼前缀，析构时把整行一次性交给输出函数
+
+   为什么用宏：
+   宏展开能拿到调用点的 __FILE__ 和 __LINE__；
+   若写成函数调用，拿到的只会是 logger.cc 自己的文件名和行号。
+   宏体为 if(ShouldLog(level)) Logger(...).stream()，
+   等级不满足时连 Logger 对象都不构造，零开销。
+
+   线程安全：
+   每条日志的缓冲区是 Logger 的成员，位于各自线程的栈上，天然隔离；
+   输出函数 g_output 内部以「一次 fwrite 写整行」保证不交错。
+   因此多线程并发打日志无需加锁（8 线程 × 10000 条验证无交错）。
+
+   可替换输出：
+   - SetOutput(func)  替换输出目标（如写文件、写日志轮转器）
+   - SetFlush(func)   替换刷新方式，与 SetOutput 配合使用
+   两者须在打印第一条日志之前调用。
+
+   LOG_FATAL 语义：
+   输出后立即 g_flush() 再 abort()，用于不可恢复错误（如 errif）。
+   abort 不展开栈、不调 atexit，因此其他 FILE* 未刷出的内容会丢失，
+   这是 FATAL 的固有代价。
+
+   已知限制：
+   - 单条日志超过 4000 字节时，超出部分被静默丢弃（FixedBuffer 空间不足直接返回）
+   - g_output / minLevel 无原子保护，约定在启动阶段配置，运行期不切换
 
 
 四、请求处理流程（一次完整 GET）
@@ -333,6 +379,10 @@ test/
   [x] 响应首部接管：Content-Length / Connection 由框架生成
   [x] 默认长连接：响应头固定 Connection: keep-alive
   [x] 抓包验证：分片请求续读、10 秒精确超时、四次挥手无 RST
+  [x] 日志：Logger / LogStream / FixedBuffer 异步零分配拼接
+  [x] 日志：等级过滤、可替换输出与刷新函数
+  [x] 日志：多线程输出不交错（8 线程 × 10000 条验证通过）
+  [x] 日志：errif 与 net 层输出统一迁移至 LOG_*
 
 待完成：
   [ ] 写事件注册（WriteNonBlocking 遇 EAGAIN 后未注册 EPOLLOUT，
