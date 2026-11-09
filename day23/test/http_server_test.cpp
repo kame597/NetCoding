@@ -1,8 +1,14 @@
 #include "event_loop.h"
 #include "http_server.h"
+#include "logger.h"
 #include <memory>
 #include <iostream>
 int main(int argc, char* args[]){
+
+    Logger::SetLogFile("log.txt");
+    Logger::SetInterval(3);
+    Logger::SetLogLevel(LogLevel::kDebug);
+
     int port = 8888;
     std::string ip = "127.0.0.1";
     std::unique_ptr<EventLoop> loop = std::make_unique<EventLoop>();
@@ -10,7 +16,6 @@ int main(int argc, char* args[]){
 
     // 具体业务注入
     server->set_message_callback([](const HttpRequest& req, HttpResponse* resp){
-        std::cout << "url = [" << req.url() << "]" << std::endl;
         resp->set_version("HTTP/1.1");
         if(req.url() == "/"){
             resp->set_status_code(HttpResponse::StatusCode::k200Ok);
