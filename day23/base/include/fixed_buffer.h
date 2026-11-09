@@ -4,6 +4,7 @@
 // fixed_buffer是一个栈上的固定大小缓冲区，供LogStream拼接单条日志使用
 
 const int kSmallBuffer = 4000;  // 全局常量，表示单条日志缓冲区的大小，即FixedBuffer的模版参数，定义在一处方便多处使用和修改
+const int kLargeBuffer = 4000000;
 const int kMaxNumericSize = 48; // 单个数字格式化可能占用的最大字节数
 
 template<int SIZE>
