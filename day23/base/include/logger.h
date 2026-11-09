@@ -30,9 +30,8 @@ public:
     static void SetLogLevel(LogLevel level);
     static LogLevel GetLogLevel();
 
-    // 设置输出区域和刷新区域，在打印第一条日志之前调用
-    static void SetOutput(OutputFunc func); 
-    static void SetFlush(FlushFunc func);
+    static void SetLogFile(std::string basename);
+    static void SetInterval(int interval);
 
     
 
