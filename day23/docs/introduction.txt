@@ -13,7 +13,7 @@ WebServer 项目介绍
 
 分层设计，自下而上共三层：
 
-    base/   基础设施层：线程封装、时间戳、工具宏、通用定义
+    base/   基础设施层：线程封装、时间戳、日志（同步 + 异步）、同步原语
     net/    TCP 网络层：事件循环、Channel、连接管理、线程池、定时器
     http/   HTTP 协议层：报文解析、响应构造、连接驱动
 
@@ -26,15 +26,17 @@ WebServer 项目介绍
 二、目录结构
 ------------------------------------------------------------------------
 base/include/
-    common.h            通用宏（DISALLOW_COPY_AND_MOVE）
-    current_thread.h    当前线程信息（tid 等，tid_string 供日志使用）
+    common.h            通用宏（DISALLOW_COPY_AND_MOVE）与前置声明
+    current_thread.h    当前线程信息（__thread 缓存 tid，供日志使用）
     timestamp.h         时间戳封装（微秒精度，Now / AddTime / FormatTo）
     utils.h             工具函数、错误处理 errif（内部走 LOG_FATAL）
     log_level.h         日志等级枚举与 level_to_string
-    fixed_buffer.h      固定大小栈缓冲区，供 LogStream 拼接使用
+    fixed_buffer.h      固定大小栈缓冲区（4KB 单条日志 / 4MB 异步缓冲）
     source_file.h       从 __FILE__ 中截取文件名部分
     log_stream.h        日志流：重载 operator<< 把各类数据追加进缓冲区
-    logger.h            日志器：前缀格式化、等级过滤、可替换输出/刷新函数
+    logger.h            日志器：前缀格式化、等级过滤、输出转交 AsyncLogging
+    latch.h             倒计数闩锁：保证后端线程就绪后再返回
+    async_logging.h     异步日志：前端缓冲 + 双缓冲交换 + 后端落盘线程
 
 net/include/
     event_loop.h            事件循环：Loop / RunInLoop / QueueInLoop / 定时器接口
@@ -57,8 +59,13 @@ http/include/
     http_server.h       HTTP 服务器（回调转发、连接表管理、超时配置）
 
 test/
+    http_server_test.cpp  压测入口：GET / 返回固定正文
+    http_test.cpp         协议测试：半包、粘包、畸形报文
     timed_close_test.cpp  端到端验证：GET 响应 + 空闲超时主动关闭
-    log_test.cpp          日志验证：等级过滤、输出计数、多线程不交错、文件输出
+    echo_server.cpp       裸 TCP 回显，用于对照压测
+    timer_test.cpp        定时器：RunAfter / RunEvery / CancelTimer
+    latch_test.cpp        闩锁：多线程 CountDown 唤醒等待线程
+    asyncLog_test.cpp     异步日志：多线程写入 + 文件落盘
 
 
 三、核心组件说明
@@ -107,7 +114,7 @@ test/
                              并 RunInLoop 到子线程注册空闲超时
    - HandleClose(conn)       先转发上层 on_close_，再投递 HandleCloseInLoop
    - HandleCloseInLoop(conn) 在 main reactor 中删表，再投递析构任务
-   - set_conn_timeout_(sec)  配置超时秒数，默认 60s，0 表示不启用
+   - SetConnTimeout(sec)     配置超时秒数，默认 60s，0 表示不启用
 
    连接表 connections_map_ 的增删都在 main reactor 线程中完成。
 
@@ -173,7 +180,7 @@ test/
    - 只有新定时器成为队首时才 ResetTimerfd，避免无谓的系统调用
    - 周期定时器在 HandleRead 中回插，而非使用 timerfd 的 it_interval
 
-9. Logger（日志）
+9. Logger（日志前端）
    使用方式：
        LOG_INFO << "fd=" << fd;
    输出格式：
@@ -186,7 +193,7 @@ test/
    - SourceFile        从 __FILE__ 截取文件名，避免打印完整路径
    - FixedBuffer       栈上 4000 字节缓冲区，避免每条日志一次堆分配
    - LogStream         重载 operator<<，把字符串/整数/TimeStamp 追加进缓冲区
-   - Logger            构造时拼前缀，析构时把整行一次性交给输出函数
+   - Logger            构造时拼前缀，析构时把整行交给 AsyncLogging::Append
 
    为什么用宏：
    宏展开能拿到调用点的 __FILE__ 和 __LINE__；
@@ -196,59 +203,107 @@ test/
 
    线程安全：
    每条日志的缓冲区是 Logger 的成员，位于各自线程的栈上，天然隔离；
-   输出函数 g_output 内部以「一次 fwrite 写整行」保证不交错。
-   因此多线程并发打日志无需加锁（8 线程 × 10000 条验证无交错）。
+   跨线程的唯一交汇点是 AsyncLogging::Append，由一把互斥锁保护。
+   因此前端无需为「行不交错」做额外处理。
 
    可替换输出：
-   - SetOutput(func)  替换输出目标（如写文件、写日志轮转器）
-   - SetFlush(func)   替换刷新方式，与 SetOutput 配合使用
-   两者须在打印第一条日志之前调用。
+   - SetLogFile(basename)  指定落盘文件，空串表示 stdout
+   - SetInterval(sec)      指定后端最长刷新间隔，默认 3s
+   两者须在第一条日志之前调用（异步实例在首次打印时惰性构造）。
 
    LOG_FATAL 语义：
-   输出后立即 g_flush() 再 abort()，用于不可恢复错误（如 errif）。
-   abort 不展开栈、不调 atexit，因此其他 FILE* 未刷出的内容会丢失，
-   这是 FATAL 的固有代价。
+   绕过异步队列，直接 fwrite + fflush 后 abort()，用于不可恢复错误（如 errif）。
+   走同步路径是为了保证崩溃前的最后一条日志一定落盘。
 
    已知限制：
    - 单条日志超过 4000 字节时，超出部分被静默丢弃（FixedBuffer 空间不足直接返回）
-   - g_output / minLevel 无原子保护，约定在启动阶段配置，运行期不切换
+   - minLevel 与配置项无原子保护，约定在启动阶段配置，运行期不切换
+
+10. AsyncLogging（异步日志后端）
+    动机：同步日志的两个阻塞点都在业务线程上——
+    fwrite 内部有 FILE* 锁，多线程并发打日志会排队等锁；
+    缓冲区满时 fwrite 触发 write，write 是阻塞的，直接拖慢业务线程。
+    日志量一大，业务延迟就被日志吃掉。
+
+    拆分方式：
+    业务线程只做「格式化 + 内存拷贝」，把整行交给 Append；
+    真正的 fwrite / fflush 由唯一的后端线程完成。
+
+    三个核心机制：
+    1) 前端缓冲区
+       每个业务线程在栈上拼好一行，Append 时整行 memcpy 进
+       curr_buffer_（4MB 的 FixedBuffer），不做任何 IO。
+    2) 双缓冲交换
+       前端持有 curr_buffer_ / next_buffer_，后端持有 buffer1 / buffer2。
+       前端缓冲写满时，把 curr_buffer_ 推入 buffers_ 队列，
+       立刻换上 next_buffer_ 继续写，不等待后端。
+       后端被唤醒后，用 buffersToWrite.swap(buffers_) 一次性取走整批，
+       swap 是 O(1)，交换期间前端持锁时间极短。
+    3) 唤醒机制
+       前端缓冲满时 notify_one；后端在 buffers_ 为空时
+       以 flush_interval_ 为上限 wait_for，兼顾「有数据立刻写」与
+       「低频小流量也不至于长期不落盘」。
+
+    缓冲对象回收：
+    后端写完一批后，把多余缓冲 resize 掉，只留两个回填 buffer1 / buffer2，
+    下一轮再交给前端当 next_buffer_，避免每轮都 new 4MB。
+
+    退出排空：
+    Stop() 置 running_ = false 并 notify，后端跳出循环后
+    还会把 curr_buffer_ 里残留的日志补写一遍再退出，
+    保证「进程正常结束时不丢最后一批日志」。
+
+    代价：
+    - 进程崩溃（abort / 段错误 / kill -9）时，队列中未写出的日志会丢失
+    - 多一个后端线程和若干 4MB 缓冲的常驻内存
+
+11. Latch（倒计数闩锁）
+    用途：让「创建线程的一方」等到「新线程真正跑起来」再继续。
+    AsyncLogging::Start 中 thread_ 已创建，但后端线程可能还没进入
+    ThreadFunc，此时若主线程立刻 Append，虽然逻辑上安全（有锁），
+    但 flush_interval_ 等成员的可见性依赖闩锁建立的同步关系。
+
+    - Wait()       阻塞直到 count_ == 0
+    - CountDown()  计数减一，减到 0 时 notify_all
+    后端线程进入 ThreadFunc 后第一件事就是 CountDown，
+    主线程的 Wait 随即返回，Start 才算真正完成。
 
 
 四、请求处理流程（一次完整 GET）
 ------------------------------------------------------------------------
-  客户端
-    │  1. TCP 三次握手
-    ▼
-  主 Reactor ── accept ──► TcpServer::HandleNewConnection
-    │                          │
-    │                          ├─ next_loop() 选一个子 Reactor
-    │                          ├─ 创建 TcpConnection
-    │                          ├─ 注入 close/message/connect 回调
-    │                          ├─ RunInLoop 到子线程注册空闲超时
-    │                          └─ connections_map_[fd] = conn
-    ▼
-  子 Reactor ── epoll 可读 ──► TcpConnection::HandleMessage
-    │                          │
-    │                          ├─ Read() 累积到 read_buffer_
-    │                          ├─ ResetIdleTimer() 滑动续期
-    │                          └─ on_message_ → HttpServer::OnMessage
-    ▼
-  HttpConnection::OnMessage
-    │
-    ├─ while 循环调用 context_.ParseRequest(buf)   ← 处理粘包
-    │     ├─ kGotAll   → HandleRequest + Reset，继续循环
-    │     ├─ kNeedMore → break，等下次数据          ← 处理半包
-    │     └─ kError    → should_close_ = true，break
-    │
-    └─ HandleRequest → 业务回调填装 resp → SendResponse
-                            │
-                            └─ conn_->Send(ToString(true))
+ 客户端
+   │  1. TCP 三次握手
+   ▼
+ 主 Reactor ── accept ──► TcpServer::HandleNewConnection
+   │                          │
+   │                          ├─ next_loop() 选一个子 Reactor
+   │                          ├─ 创建 TcpConnection
+   │                          ├─ 注入 close/message/connect 回调
+   │                          ├─ RunInLoop 到子线程注册空闲超时
+   │                          └─ connections_map_[fd] = conn
+   ▼
+ 子 Reactor ── epoll 可读 ──► TcpConnection::HandleMessage
+   │                          │
+   │                          ├─ Read() 累积到 read_buffer_
+   │                          ├─ ResetIdleTimer() 滑动续期
+   │                          └─ on_message_ → HttpServer::OnMessage
+   ▼
+ HttpConnection::OnMessage
+   │
+   ├─ while 循环调用 context_.ParseRequest(buf)   ← 处理粘包
+   │     ├─ kGotAll   → HandleRequest + Reset，继续循环
+   │     ├─ kNeedMore → break，等下次数据          ← 处理半包
+   │     └─ kError    → should_close_ = true，break
+   │
+   └─ HandleRequest → 业务回调填装 resp → SendResponse
+                           │
+                           └─ conn_->Send(ToString(true))
 
-  默认长连接：响应头为 Connection: keep-alive，连接不随响应结束而关闭，
-  客户端可继续在同一连接上发送下一个请求。
-  连接终止有两种途径：
-  1) 客户端主动关闭：服务器 read 返回 0，进入关闭流程；
-  2) 空闲超时：客户端 conn_timeout_ 秒内无数据，服务器 ForceClose 主动断开。
+ 默认长连接：响应头为 Connection: keep-alive，连接不随响应结束而关闭，
+ 客户端可继续在同一连接上发送下一个请求。
+ 连接终止有两种途径：
+ 1) 客户端主动关闭：服务器 read 返回 0，进入关闭流程；
+ 2) 空闲超时：客户端 conn_timeout_ 秒内无数据，服务器 ForceClose 主动断开。
 
 
 五、连接管理
@@ -341,6 +396,8 @@ test/
    HttpContext     只负责报文解析
    TcpConnection   只负责连接生命周期与读写
    TimerQueue      只负责定时调度，不关心回调内容
+   Logger          只负责格式化，不关心落盘时机
+   AsyncLogging    只负责落盘，不关心日志内容
 
 4. 延迟销毁
    通过「待办队列 + weak_ptr 保护 + 引用计数」三者配合，
@@ -358,11 +415,42 @@ test/
    业务回调即使写入也会被过滤。
    避免「长度与正文不一致」和「连接语义前后矛盾」两类错误。
 
+7. 日志的「快慢分离」
+   把日志拆成「格式化（业务线程）」与「落盘（后端线程）」两段，
+   中间用缓冲队列解耦。
+   业务线程的日志开销被压缩为一次 memcpy + 一次可能的 notify，
+   与磁盘 IO 彻底脱钩。
 
-八、当前进度
+
+八、性能验证
+------------------------------------------------------------------------
+环境：WSL2，16 核，g++ -O3 -DNDEBUG，wrk 压测 30s。
+服务端：http_server_test，业务为 GET / 返回 20 字节固定正文。
+
+  连接数  线程数  QPS        P50       P99
+  --------------------------------------------------
+   500     12     287,657    788 us    11.38 ms
+   150      4     104,379    693 us     2.89 ms
+   250      4     116,157    1.03 ms    3.66 ms
+   300      4     116,892    1.22 ms    4.22 ms
+
+结论：
+1) 峰值出现在 500 连接 / 12 线程，约 28.7 万 QPS，
+   已接近 nginx 静态服务的下沿，说明主从 Reactor 架构成立。
+2) 150 → 300 连接区间 QPS 基本持平（10.4 万 → 11.7 万），
+   P50 随连接数线性上升，符合「服务端已饱和、新增连接在排队」的特征。
+3) 优化级别的影响显著：-O0 下峰值约 12~20 万且抖动大，
+   -O3 下峰值 28.7 万、P50 从 1.9ms 降到 0.79ms。
+   说明代码中 std::string 与迭代器的抽象开销较重，依赖内联消除。
+
+需要说明的是，本组数据只反映「小请求、无路由、无文件 IO」下的框架开销，
+不能直接与静态文件服务器对比；业务变重后瓶颈会转移到 Buffer 与写路径。
+
+
+九、当前进度
 ------------------------------------------------------------------------
 已完成：
-  [x] base 基础设施（含 TimeStamp 微秒时间戳）
+  [x] base 基础设施（含 TimeStamp 微秒时间戳、current_thread 的 tid 缓存）
   [x] net 层：EventLoop / Epoller / Channel / Acceptor
   [x] net 层：TcpConnection / TcpServer / 线程池
   [x] http 层：HttpRequest / HttpResponse / HttpContext
@@ -379,35 +467,19 @@ test/
   [x] 响应首部接管：Content-Length / Connection 由框架生成
   [x] 默认长连接：响应头固定 Connection: keep-alive
   [x] 抓包验证：分片请求续读、10 秒精确超时、四次挥手无 RST
-  [x] 日志：Logger / LogStream / FixedBuffer 异步零分配拼接
-  [x] 日志：等级过滤、可替换输出与刷新函数
+  [x] 日志：Logger / LogStream / FixedBuffer 零堆分配拼接
+  [x] 日志：等级过滤、单条日志超限保护
   [x] 日志：多线程输出不交错（8 线程 × 10000 条验证通过）
   [x] 日志：errif 与 net 层输出统一迁移至 LOG_*
+  [x] 异步日志：AsyncLogging 前端缓冲 + 双缓冲交换 + 后端落盘
+  [x] 异步日志：Latch 保证后端线程就绪、Stop 时排空残留缓冲
+  [x] 压测：wrk 500 连接下 28.7 万 QPS，P50 788us
 
 待完成：
   [ ] 写事件注册（WriteNonBlocking 遇 EAGAIN 后未注册 EPOLLOUT，
       大响应可能丢失剩余数据）
+  [ ] 异步日志的丢弃策略（后端跟不上时 buffers_ 会无限增长，
+      需加「队列超限则丢弃并记一条提示」的保护）
   [ ] keep-alive 请求计数（keepalive_count_ 已预留，尚未接入上限控制）
   [ ] 静态资源 / 路由分发
-  [ ] 压测与并发验证
-
-小笔记：
-为什么需要异步日志库？
-—— 因为同步日志库的写日志行为发生在业务线程，fwrite内部有FILE*锁，多个线程同时打日志会排队等锁
-   另外fwrie在缓冲区满时会触发write写，write时阻塞的，会拖慢业务线程
-   因此，日志量大时，日志会显著拖慢性能
-
-异步日志库的概念：
-   将日志拆成两个线程完成；
-   业务线程只做内存拷贝、格式化等工作；真正的write由唯一的后端线程完成
-   即：很多个线程在写日志时，只将任务投递到一个队列，write线程持续从该队列里取数据写
-
-异步日志库的三个机制：
-   1. 前端缓冲区：即每个业务线程持有的FixedBuffer，将该缓冲区交付给后端
-   2. 双缓冲交换：前端有一组缓冲，后端有一组缓冲，后端唤醒时，通过swap将前后端缓冲交换
-         swap是O(1)复杂度，不影响性能；双交换是异步日志库的关键机制
-   3. 唤醒机制：唤醒指的是唤醒一个进程，本质是notify_one函数，但是需要确定好唤醒时机
-
-异步日志库的代价：
-   1. 因为write由一个单独线程负责，因此进程崩溃时会日志丢失
-   2. 会多一个线程和额外的内存占用
+  [ ] 长时稳定性验证（内存与 fd 泄漏、异常断开、慢客户端）

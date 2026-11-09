@@ -19,7 +19,7 @@ AsyncLogging::AsyncLogging(const std::string& basename, int flush_interval) :
         fp_ = stdout;
     }
     else{
-        fp_ = fopen(basename_.c_str(), "a+b");  // 先绑定文件流，再开启后端线程
+        fp_ = fopen(basename_.c_str(), "w+b");  // 先绑定文件流，再开启后端线程
         if(fp_ == nullptr){
             fp_ = stdout;
             printf("日志输出文件 %s 打开失败", basename_.c_str());
