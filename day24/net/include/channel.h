@@ -18,7 +18,7 @@ public:
     void EnableRead();          //允许读
     void EnableWrite();         //允许写
     void EnableET();            //指定ET模式
-    void DisableWrite();        //todo禁用写，待实现
+    void DisableWrite();        //禁用写
     void DisableRead();
   
     int fd()const { return fd_;}

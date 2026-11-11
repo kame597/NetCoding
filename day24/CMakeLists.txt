@@ -25,14 +25,8 @@ target_include_directories(webServer PUBLIC base/include net/include http/includ
 #指定链接时挂的库
 target_link_libraries(webServer PUBLIC Threads::Threads)
 
-add_executable(echoserver test/echo_server.cpp)
-target_link_libraries(echoserver PRIVATE webServer)
-
 add_executable(client test/test.cpp)
 target_link_libraries(client PRIVATE webServer)
-
-add_executable(http_test test/http_test.cpp)
-target_link_libraries(http_test PRIVATE webServer)
 
 add_executable(http_server_test test/http_server_test.cpp)
 target_link_libraries(http_server_test PRIVATE webServer)

@@ -17,6 +17,7 @@ TcpConnection::TcpConnection(EventLoop* loop, int connfd, uint64_t connid):
     if(loop != nullptr){
         conn_channel_ = std::make_unique<Channel>(connfd_, loop);
         conn_channel_->set_read_callback(std::bind(&TcpConnection::HandleMessage, this));
+        conn_channel_->set_write_callback(std::bind(&TcpConnection::HandleWrite, this));
     }
 }
 
@@ -46,20 +47,31 @@ void TcpConnection::ConnectionDestruct(){
 
 void TcpConnection::HandleMessage(){
     Read();
-    if(conn_state_ != ConnectionState::DisConnected)
-        ResetIdleTimer(); // 如果该链接有读取，且读取成功，连接还在，则重置定时器
+    if(conn_state_ != ConnectionState::Connected) return;
+
+    ResetIdleTimer(); // 如果该链接有读取，且读取成功，连接还在，则重置定时器
     if(on_message_)
-        on_message_(shared_from_this(), &read_buffer_);
+        on_message_(shared_from_this(), &input_buffer_);
+}
+
+void TcpConnection::HandleWrite()
+{
+    Write();
 }
 
 void TcpConnection::HandleClose(){
     if(conn_state_ != ConnectionState::DisConnected){
         conn_state_ = ConnectionState::DisConnected;
         /*
-        *   先关闭读监听：
+        *   先关闭读写监听：
         *   避免关闭后到DeleteChannel摘除fd的窗口期内，epoll仍触发读事件导致空转
         */
         conn_channel_->DisableRead();   
+        if(writing_){
+            conn_channel_->DisableWrite();
+            writing_ = false;
+        }
+        
         CancelIdleTimer();  //取消定时器，删掉RunAfter存的TcpConnection引用
         if(on_close_)
             on_close_(shared_from_this());
@@ -106,87 +118,77 @@ void TcpConnection::CancelIdleTimer(){
 }
 
 void TcpConnection::Send(const std::string& msg){
-    set_write_buf(msg.c_str());
+    assert(loop_ -> IsInLoopThread());
+    if(conn_state_ != ConnectionState::Connected) return;
+    output_buffer_.Append(msg.c_str(), msg.length());
     Write();
 }
 
-void TcpConnection::Send(const char* msg){
-    set_write_buf(msg);
-    Write();
-}
 
 void TcpConnection::Send(const char* msg, int len){
-    write_buffer_.Append(msg, len);
+    if(conn_state_ != ConnectionState::Connected || len < 0 || msg == nullptr) return;
+    output_buffer_.Append(msg, len);
     Write();
 }
 
 void TcpConnection::Read(){
     if(conn_state_ != ConnectionState::Connected) return;
-    // read_buffer_.Clear();   为适应Http的半包行为，改装成累积缓冲区，不再清空
     ReadNonBlocking();
 }
 
 void TcpConnection::Write(){
     if(conn_state_ != ConnectionState::Connected) return;
     WriteNonBlocking();
-    write_buffer_.Clear();
+    if(conn_state_ != ConnectionState::Connected) return;
+    if(output_buffer_.ReadableBytes() > 0){     //如果输出缓冲区有内容，则启用写
+        if(!writing_){
+            writing_ = true;
+            conn_channel_->EnableWrite();
+        }
+    }
+    else{   // 缓冲区没内容，禁用写
+        if(writing_){
+            writing_ = false;
+            conn_channel_->DisableWrite();
+        }
+    }
 }
 
 
 void TcpConnection::ReadNonBlocking(){
-    char buf[1024];
+    int savedErrno = 0;
     while(true){
-        memset(buf, 0, sizeof(buf));
-        ssize_t read_bytes = read(connfd_, buf, sizeof(buf));
-
-        if(read_bytes > 0){  //如果读到数据，则放到缓冲区中
-            read_buffer_.Append(buf, read_bytes);
-        }
-        else if(read_bytes == -1 && errno == EINTR){     //正常程序中断
-            continue;
-        }
-        else if(read_bytes == -1 && ((errno == EAGAIN) || (errno == EWOULDBLOCK))){  //程序读取完成，或者没有数据可读了
+        ssize_t read_bytes = input_buffer_.ReadFd(connfd_, &savedErrno);
+        if(read_bytes > 0)  continue;
+        if(read_bytes == 0) {
+            LOG_DEBUG << "客户端:" << connfd_ << "断开链接";
+            HandleClose(); 
             break;
         }
-        else if(read_bytes == 0){    //客户端断开链接
-            LOG_INFO << "客户端:" << connfd_ << "断开链接";
-            HandleClose();
-            break;
-        }
-        else{
-            LOG_ERROR << "客户端:" << connfd_ << "读取出错: " << strerror(errno);
-            HandleClose();
-            break;
-        }
+        if(savedErrno == EINTR) continue; //正常程序中断
+        if(savedErrno == EAGAIN || savedErrno == EWOULDBLOCK) break; //程序读取完成，或者没有数据可读了
+            
+        LOG_ERROR << "客户端:" << connfd_ << "读取出错: " << strerror(savedErrno);
+        HandleClose();
+        break;
     }
 }
 
 /*
 *   @brief
-*   非阻塞写入，只负责写入，不进行业务设计
-*   dataSize表示总共要写多少数据，dataLeft表示还剩下多少字节没写完   
+*   非阻塞写入，只负责写入，不进行业务设计   
 *
 */
 void TcpConnection::WriteNonBlocking(){
-    char buf[write_buffer_.Size()];
-    memcpy(buf, write_buffer_.c_str(), write_buffer_.Size());
-
-    int data_size = write_buffer_.Size();
-    int data_left = data_size;
-
-    while(data_left > 0){
-        ssize_t write_bytes = write(connfd_, buf + data_size - data_left, data_left);
-        if(write_bytes == -1 && errno == EINTR){
-            continue;
-        }
-        else if(write_bytes == -1 && (errno == EAGAIN)){
-            break;
-        }
-        else if(write_bytes == -1){
-            LOG_ERROR << "客户端:" << connfd_ << "写取出错: " << strerror(errno);
-            HandleClose();
-            break;
-        }
-        data_left -= write_bytes;
+    while(output_buffer_.ReadableBytes() > 0){
+        int savedErrno = 0;
+        ssize_t write_bytes = output_buffer_.WriteFd(connfd_, &savedErrno);
+        if(write_bytes > 0) continue;    
+        if(savedErrno == EINTR) continue;
+        if(savedErrno == EAGAIN || savedErrno == EWOULDBLOCK) break;
+        
+        LOG_ERROR << "客户端:" << connfd_ << "写取出错: " << strerror(errno);
+        HandleClose();
+        return;
     }
 }

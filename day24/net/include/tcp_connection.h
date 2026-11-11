@@ -31,28 +31,23 @@ public:
     TcpConnection(EventLoop* loop, int connfd, uint64_t connid);
     ~TcpConnection();
 
+    // 连接生命周期
     void ConnectionEstablish();
-
     void ConnectionDestruct();
     
+    // 回调注册
     void set_close_callback(CloseCallback cb){ on_close_ = std::move(cb); }
     void set_message_callback(MessageCallback cb){ on_message_ = std::move(cb); }
     void set_connection_callback(ConnectionCallback cb){ on_connection_ = std::move(cb); }
 
-    void set_write_buf(const char* buf){ write_buffer_.set_buf(buf); }
-    const char* read_buffer(){ return read_buffer_.c_str(); }
-    const char* write_buffer(){ return write_buffer_.c_str(); }
-
-    void Read();    //读操作
-    void Write();   //写操作
     void Send(const std::string& msg);
     void Send(const char* msg, int len);
-    void Send(const char* msg);
-
-   void HandleMessage();    //当接受到信息时，触发回调
+    
+   // 关闭
    void HandleClose();      
    void ForceClose();       //服务器主动关闭连接，发生在超时情景下
 
+   // 定时器
    void EnableIdleTimeout(int seconds);
    void ResetIdleTimer();
    void CancelIdleTimer();
@@ -71,8 +66,8 @@ private:
     EventLoop* loop_;
 
     std::unique_ptr<Channel> conn_channel_;       //客户端的channel
-    Buffer read_buffer_;                          //这个缓存是输入缓冲区，存储read的内容
-    Buffer write_buffer_;                         //该缓存是输出缓冲区，存储write的内容
+    Buffer input_buffer_;                          //这个缓存是输入缓冲区，存储read的内容
+    Buffer output_buffer_;                         //该缓存是输出缓冲区，存储write的内容
 
 
     //三个业务回调，分别用于关闭时触发，收信息，建立连接，由TcpServer注入
@@ -84,6 +79,17 @@ private:
     int64_t idle_timer_id_ = -1;
     int conn_timeout_ = 0;
 
+    // 读写接口
+    void Read();    //读操作
+    void Write();   //写操作
+
+    // Channel 回调
+    void HandleMessage();    //当接受到信息时，触发回调
+    void HandleWrite();
+
+    // I/O 引擎
     void ReadNonBlocking();
     void WriteNonBlocking();
+
+    bool writing_ = false;
 };  
