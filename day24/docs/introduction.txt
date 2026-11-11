@@ -14,7 +14,7 @@ WebServer 项目介绍
 分层设计，自下而上共三层：
 
     base/   基础设施层：线程封装、时间戳、日志（同步 + 异步）、同步原语
-    net/    TCP 网络层：事件循环、Channel、连接管理、线程池、定时器
+    net/    TCP 网络层：事件循环、Channel、连接管理、线程池、定时器、缓冲区
     http/   HTTP 协议层：报文解析、响应构造、连接驱动
 
 依赖方向严格「自下而上」：
@@ -43,7 +43,7 @@ net/include/
     epoller.h               epoll 的封装：Poll / UpdateChannel / DeleteChannel
     channel.h               fd 的事件封装：读/写回调、Tie 弱引用保护
     acceptor.h              监听 socket：Bind / Listen / AcceptConnection
-    buffer.h                读写缓冲区：Append / Retrieve / FindCRLF
+    buffer.h                读写缓冲区：vector<char> + 双索引三段式布局
     tcp_connection.h        单个 TCP 连接：读写、关闭、空闲超时、状态管理
     tcp_server.h            服务器：连接表管理、线程池调度、超时配置
     event_loop_thread.h     一个线程 + 一个 EventLoop
@@ -60,10 +60,10 @@ http/include/
 
 test/
     http_server_test.cpp  压测入口：GET / 返回固定正文
-    http_test.cpp         协议测试：半包、粘包、畸形报文
     timed_close_test.cpp  端到端验证：GET 响应 + 空闲超时主动关闭
-    echo_server.cpp       裸 TCP 回显，用于对照压测
+    test.cpp              裸 TCP 客户端，用于手工对照
     timer_test.cpp        定时器：RunAfter / RunEvery / CancelTimer
+    timerfd_test.cpp      timerfd 基础行为验证
     latch_test.cpp        闩锁：多线程 CountDown 唤醒等待线程
     asyncLog_test.cpp     异步日志：多线程写入 + 文件落盘
 
@@ -84,7 +84,7 @@ test/
 
 2. Channel（事件封装）
    把一个 fd 和它关心的事件、回调绑定在一起。
-   - EnableRead / EnableWrite / DisableRead  修改监听事件
+   - EnableRead / EnableWrite / DisableRead / DisableWrite  修改监听事件
    - HandleEvent()  根据 ready_events_ 分发到读/写回调
    - Tie(ptr)       绑定一个 weak_ptr，用于延迟销毁
 
@@ -92,33 +92,103 @@ test/
    只在 HandleEvent 期间 lock() 提升为 shared_ptr，
    保证回调执行期间对象不被析构。
 
-3. TcpConnection（连接对象）
+3. Buffer（读写缓冲区）
+   底层为 std::vector<char>，配一对读/写索引，构成经典三段式布局：
+
+   +-------------------+------------------+------------------+
+   | prependable bytes |  readable bytes  |  writable bytes  |
+   |                   |     Content      |                  |
+   +-------------------+------------------+------------------+
+                       |                  |
+                   read_index_       write_index_
+
+   - prependable  已消费但未回收的空间，用于 O(1) 前置协议头
+   - readable     已接收但未被上层消费的有效数据
+   - writable     尾部空闲空间，用于追加新数据
+
+   索引语义：
+   - 初始 read_index_ = write_index_ = kCheapPrepend（8 字节）
+   - 写入时 write_index_ 右移，读取时 read_index_ 右移
+   - ReadableBytes() = write_index_ - read_index_
+   - Retrieve() 只移动索引，不搬数据、不释放内存
+
+   关键接口：
+   - Append(data, len)         追加数据，空间不足先 EnsureWritableBytes
+   - Prepend(data, len)        在 readable 段前插入，仅前移 read_index_
+   - EnsureWritableBytes(len)  保证尾部有 len 字节可写
+   - ExpandSpace(len)          扩容：真扩容 resize / 伪扩容搬移回收
+   - ReadFd(fd, &savedErrno)   readv 分散读，栈上 64KB 备用缓冲兜底
+   - WriteFd(fd, &savedErrno)  write 一次，成功后自动 Retrieve
+   - Retrieve / RetrieveAll / RetrieveAsString / RetrieveUntil
+   - Peek / FindCRLF           零拷贝读取视图与 CRLF 定位
+
+   扩容策略（ExpandSpace）：
+   - 真扩容：writable + prependable < len + kCheapPrepend 时 resize，
+     把 vector 扩到 write_index_ + len
+   - 伪扩容：首尾空闲拼起来够用，则把 readable 段搬到 kCheapPrepend，
+     回收 prependable 空间，避免 vector 无限增长
+
+   ReadFd 的两段式读：
+   用 iovec[2] 同时指向「缓冲区尾部空闲区」和「栈上 64KB extraBuf」，
+   一次 readv 就能把数据读满。若读入量超过 writable，
+   说明 extraBuf 已被使用，把 write_index_ 推到末尾后 Append 补齐。
+   这样避免了「先探测可读字节数再扩容」的额外系统调用。
+
+   为什么用 vector<char> 而不是 std::string：
+   - char 语义明确，不隐含「以 \0 结尾」的假设
+   - vector 的 resize 语义清晰，不会因 SSO 造成小缓冲区地址不稳定
+   - 与 readv/writev 的裸内存视图天然契合
+
+4. TcpConnection（连接对象）
    - ConnectionEstablish()  Tie + EnableRead + 触发连接回调
-   - HandleMessage()        Read + 重置空闲定时器 + 触发消息回调
+   - HandleMessage()        Read + 状态校验 + 重置空闲定时器 + 触发消息回调
    - HandleClose()          DisableRead + 撤销空闲定时器 + 触发关闭回调（幂等）
    - ForceClose()           HandleClose + shutdown(SHUT_WR)，服务器主动关闭
    - ConnectionDestruct()   DeleteChannel，从 epoll 摘除 fd
-   - ReadNonBlocking()      循环 read 直到 EAGAIN，累积到 read_buffer_
-   - WriteNonBlocking()     循环 write 直到写完或 EAGAIN
+   - ReadNonBlocking()      循环 ReadFd 直到 EAGAIN，累积到 input_buffer_
+   - WriteNonBlocking()     循环 WriteFd 直到写完或 EAGAIN
+
+   双缓冲区：
+   - input_buffer_   读缓冲，ReadFd 写入，由 on_message_ 以 Buffer* 交给上层消费
+   - output_buffer_  写缓冲，Send 追加，WriteNonBlocking 消费
+
+   Send 接口（两个重载，共用同一份写路径）：
+   - Send(const std::string& msg)
+   - Send(const char* msg, int len)   额外校验 len < 0 与 msg == nullptr
+   两者都是「Append 到 output_buffer_ → Write()」，
+   Write() 在 WriteNonBlocking 之后重新校验连接状态，
+   若本轮写操作已触发 HandleClose，则不再操作 channel，
+   避免把已关闭的连接重新注册 EPOLLOUT。
+
+   写事件注册：
+   Write() 在 WriteNonBlocking 返回后检查 output_buffer_ 是否仍有残留，
+   有则 EnableWrite（首次进入时置 writing_ = true），
+   无则 DisableWrite。EAGAIN 时残留数据由 EPOLLOUT 可写事件驱动
+   HandleWrite → Write 继续发送，因此大响应不会被丢弃。
 
    空闲超时接口：
    - EnableIdleTimeout(sec) 建连后注册一次性定时器，到期回调 ForceClose
    - ResetIdleTimer()       每次读到数据后「取消 + 重发」，实现滑动续期
    - CancelIdleTimer()      关闭时撤销，解除定时器持有的 shared_ptr
 
-   注意：read_buffer_ 不清空（累积缓冲区），
-   这是为了配合 HTTP 的半包处理。
+   状态机（ConnectionState）：
+   - Invalid        初始/非法
+   - Connected      正常读写
+   - DisConnected   已进入关闭流程
+   Read / Write / Send 入口均以 Connected 为前置条件，
+   底层 I/O 出错后 HandleClose 会立即把状态切到 DisConnected，
+   调用方返回后必须重新校验状态，这是本类的一条硬约束。
 
-4. TcpServer（服务器）
+5. TcpServer（服务器）
    - HandleNewConnection(fd) 创建 TcpConnection，分配到子 Reactor，
-                             并 RunInLoop 到子线程注册空闲超时
+                             注入三个回调，RunInLoop 到子线程注册空闲超时
    - HandleClose(conn)       先转发上层 on_close_，再投递 HandleCloseInLoop
    - HandleCloseInLoop(conn) 在 main reactor 中删表，再投递析构任务
-   - SetConnTimeout(sec)     配置超时秒数，默认 60s，0 表示不启用
+   - set_conn_timeout_(sec)  配置超时秒数，默认 60s，0 表示不启用
 
    连接表 connections_map_ 的增删都在 main reactor 线程中完成。
 
-5. HttpContext（报文解析）
+6. HttpContext（报文解析）
    采用「有限状态机 + 循环」的方式解析：
    保持一个 while 循环，持续判断单步解析的状态，来切换当前解析状态。
    例如：如果解析请求行的结果为 kOk，则切换到 kExpectHeaderLine 状态，
@@ -137,10 +207,14 @@ test/
        kNeedMore 数据不够，等下次
        kError    报文错误
 
-6. HttpConnection（连接驱动）
-   - OnMessage(buf)  while 循环 ParseRequest，处理粘包与半包
-   - HandleRequest   构造 HttpResponse，交业务回调填装
-   - SendResponse    ToString(true) 序列化后经 TcpConnection::Send 发出
+7. HttpConnection（连接驱动）
+   - OnMessage(Buffer* buf)  while 循环 ParseRequest，处理粘包与半包
+   - HandleRequest           构造 HttpResponse，交业务回调填装
+   - SendResponse            ToString(true) 序列化后经 TcpConnection::Send 发出
+
+   数据流：TcpConnection 的 input_buffer_ 以 Buffer* 传入，
+   HttpContext 直接在 Buffer 上做零拷贝解析（Peek / FindCRLF / RetrieveUntil），
+   只有被消费的字节才推进 read_index_，未解析完的半包留在缓冲区里等下次。
 
    状态标记：
    - should_close_     报文错误或需关闭时置位，循环结束后统一 HandleClose
@@ -150,13 +224,13 @@ test/
    SendResponse 固定以 ToString(true) 序列化，响应头始终为
    Connection: keep-alive；连接的生命周期由空闲超时兜底，而非请求计数。
 
-7. HttpResponse（响应构造）
+8. HttpResponse（响应构造）
    ToString(bool keep_alive) 是序列化核心，由框架接管两个关键首部：
    - Content-Length  由 body_ 长度计算，过滤业务层写入的值
    - Connection      由 keep_alive 参数决定，过滤业务层写入的值
    204 No Content 按语义不输出 Content-Length。
 
-8. TimerQueue（定时器队列）
+9. TimerQueue（定时器队列）
    EventLoop 持有 TimerQueue，TimerQueue 持有 timerfd_ 和对应的 Channel。
    timerfd 到期变为可读，经 Channel 回调进入 HandleRead，
    从而把「定时事件」统一成「IO 事件」，复用同一套 epoll 分发机制。
@@ -180,46 +254,46 @@ test/
    - 只有新定时器成为队首时才 ResetTimerfd，避免无谓的系统调用
    - 周期定时器在 HandleRead 中回插，而非使用 timerfd 的 it_interval
 
-9. Logger（日志前端）
-   使用方式：
-       LOG_INFO << "fd=" << fd;
-   输出格式：
-       [INFO] 2026-11-05 14:37:35.312882 536289 tcp_connection.cc-152: fd=8
-       （等级、时间、线程 tid、文件-行号、正文）
+10. Logger（日志前端）
+    使用方式：
+        LOG_INFO << "fd=" << fd;
+    输出格式：
+        [INFO] 2026-11-05 14:37:35.312882 536289 tcp_connection.cc-152: fd=8
+        （等级、时间、线程 tid、文件-行号、正文）
 
-   等级：kDebug / kInfo / kWarn / kError / kFatal，默认输出 kDebug 及以上。
+    等级：kDebug / kInfo / kWarn / kError / kFatal，默认输出 kDebug 及以上。
 
-   组件分工：
-   - SourceFile        从 __FILE__ 截取文件名，避免打印完整路径
-   - FixedBuffer       栈上 4000 字节缓冲区，避免每条日志一次堆分配
-   - LogStream         重载 operator<<，把字符串/整数/TimeStamp 追加进缓冲区
-   - Logger            构造时拼前缀，析构时把整行交给 AsyncLogging::Append
+    组件分工：
+    - SourceFile        从 __FILE__ 截取文件名，避免打印完整路径
+    - FixedBuffer       栈上 4000 字节缓冲区，避免每条日志一次堆分配
+    - LogStream         重载 operator<<，把字符串/整数/TimeStamp 追加进缓冲区
+    - Logger            构造时拼前缀，析构时把整行交给 AsyncLogging::Append
 
-   为什么用宏：
-   宏展开能拿到调用点的 __FILE__ 和 __LINE__；
-   若写成函数调用，拿到的只会是 logger.cc 自己的文件名和行号。
-   宏体为 if(ShouldLog(level)) Logger(...).stream()，
-   等级不满足时连 Logger 对象都不构造，零开销。
+    为什么用宏：
+    宏展开能拿到调用点的 __FILE__ 和 __LINE__；
+    若写成函数调用，拿到的只会是 logger.cc 自己的文件名和行号。
+    宏体为 if(ShouldLog(level)) Logger(...).stream()，
+    等级不满足时连 Logger 对象都不构造，零开销。
 
-   线程安全：
-   每条日志的缓冲区是 Logger 的成员，位于各自线程的栈上，天然隔离；
-   跨线程的唯一交汇点是 AsyncLogging::Append，由一把互斥锁保护。
-   因此前端无需为「行不交错」做额外处理。
+    线程安全：
+    每条日志的缓冲区是 Logger 的成员，位于各自线程的栈上，天然隔离；
+    跨线程的唯一交汇点是 AsyncLogging::Append，由一把互斥锁保护。
+    因此前端无需为「行不交错」做额外处理。
 
-   可替换输出：
-   - SetLogFile(basename)  指定落盘文件，空串表示 stdout
-   - SetInterval(sec)      指定后端最长刷新间隔，默认 3s
-   两者须在第一条日志之前调用（异步实例在首次打印时惰性构造）。
+    可替换输出：
+    - SetLogFile(basename)  指定落盘文件，空串表示 stdout
+    - SetInterval(sec)      指定后端最长刷新间隔，默认 3s
+    两者须在第一条日志之前调用（异步实例在首次打印时惰性构造）。
 
-   LOG_FATAL 语义：
-   绕过异步队列，直接 fwrite + fflush 后 abort()，用于不可恢复错误（如 errif）。
-   走同步路径是为了保证崩溃前的最后一条日志一定落盘。
+    LOG_FATAL 语义：
+    绕过异步队列，直接 fwrite + fflush 后 abort()，用于不可恢复错误（如 errif）。
+    走同步路径是为了保证崩溃前的最后一条日志一定落盘。
 
-   已知限制：
-   - 单条日志超过 4000 字节时，超出部分被静默丢弃（FixedBuffer 空间不足直接返回）
-   - minLevel 与配置项无原子保护，约定在启动阶段配置，运行期不切换
+    已知限制：
+    - 单条日志超过 4000 字节时，超出部分被静默丢弃（FixedBuffer 空间不足直接返回）
+    - minLevel 与配置项无原子保护，约定在启动阶段配置，运行期不切换
 
-10. AsyncLogging（异步日志后端）
+11. AsyncLogging（异步日志后端）
     动机：同步日志的两个阻塞点都在业务线程上——
     fwrite 内部有 FILE* 锁，多线程并发打日志会排队等锁；
     缓冲区满时 fwrite 触发 write，write 是阻塞的，直接拖慢业务线程。
@@ -257,7 +331,7 @@ test/
     - 进程崩溃（abort / 段错误 / kill -9）时，队列中未写出的日志会丢失
     - 多一个后端线程和若干 4MB 缓冲的常驻内存
 
-11. Latch（倒计数闩锁）
+12. Latch（倒计数闩锁）
     用途：让「创建线程的一方」等到「新线程真正跑起来」再继续。
     AsyncLogging::Start 中 thread_ 已创建，但后端线程可能还没进入
     ThreadFunc，此时若主线程立刻 Append，虽然逻辑上安全（有锁），
@@ -277,18 +351,25 @@ test/
  主 Reactor ── accept ──► TcpServer::HandleNewConnection
    │                          │
    │                          ├─ next_loop() 选一个子 Reactor
-   │                          ├─ 创建 TcpConnection
+   │                          ├─ 创建 TcpConnection（绑定 sub_reactor_）
    │                          ├─ 注入 close/message/connect 回调
    │                          ├─ RunInLoop 到子线程注册空闲超时
-   │                          └─ connections_map_[fd] = conn
+   │                          ├─ connections_map_[fd] = conn
+   │                          └─ ConnectionEstablish（Tie + EnableRead）
    ▼
  子 Reactor ── epoll 可读 ──► TcpConnection::HandleMessage
    │                          │
-   │                          ├─ Read() 累积到 read_buffer_
+   │                          ├─ Read() → ReadNonBlocking → input_buffer_
+   │                          ├─ 状态校验（DisConnected 则直接返回）
    │                          ├─ ResetIdleTimer() 滑动续期
-   │                          └─ on_message_ → HttpServer::OnMessage
+   │                          └─ on_message_(self, &input_buffer_)
    ▼
- HttpConnection::OnMessage
+ HttpServer::OnMessage
+   │
+   ├─ 加锁查 http_conns_，取出 HttpConnection 的 shared_ptr 副本
+   │  （副本保证锁外使用期间对象不被 OnClose 析构）
+   ▼
+ HttpConnection::OnMessage(Buffer* buf)
    │
    ├─ while 循环调用 context_.ParseRequest(buf)   ← 处理粘包
    │     ├─ kGotAll   → HandleRequest + Reset，继续循环
@@ -298,6 +379,11 @@ test/
    └─ HandleRequest → 业务回调填装 resp → SendResponse
                            │
                            └─ conn_->Send(ToString(true))
+                                  │
+                                  ├─ output_buffer_.Append(...)
+                                  └─ Write()
+                                        ├─ WriteNonBlocking()  循环 write
+                                        └─ 有残留 → EnableWrite；无残留 → DisableWrite
 
  默认长连接：响应头为 Connection: keep-alive，连接不随响应结束而关闭，
  客户端可继续在同一连接上发送下一个请求。
@@ -314,10 +400,11 @@ test/
 
 关闭链路要点：
   TcpConnection::HandleClose
-      → DisableRead + CancelIdleTimer （摘除读监听、撤销定时器）
-      → TcpServer::HandleClose         （转发上层 + 投递到 main）
-      → HttpServer::OnClose            （删除 http_conns_ 中的条目）
-      → TcpServer::HandleCloseInLoop   （删除 connections_map_）
+      → 置 DisConnected + DisableRead + DisableWrite（若在写）
+      → CancelIdleTimer              （撤销定时器，解除强引用）
+      → TcpServer::HandleClose       （转发上层 + 投递到 main）
+      → HttpServer::OnClose          （删除 http_conns_ 中的条目）
+      → TcpServer::HandleCloseInLoop （删除 connections_map_）
       → TcpConnection::ConnectionDestruct（DeleteChannel，摘除 fd）
       → 引用计数归零，TcpConnection 析构
 
@@ -346,7 +433,7 @@ test/
    复用已有的关闭流程，不新增任何状态机分支。
 
 2. 滑动续期：取消 + 重发
-   ResetIdleTimer() 先 CancelTimer(idle_timer_fd_)，再 RunAfter 重新注册。
+   ResetIdleTimer() 先 CancelTimer(idle_timer_id_)，再 RunAfter 重新注册。
    这样每次收到数据，超时窗口都从「现在」重新起算，
    语义等价于「连接空闲超过 conn_timeout_ 秒则关闭」。
    长连接下，只要客户端持续发请求，连接就不会被超时回收。
@@ -361,11 +448,13 @@ test/
 4. 线程归属
    EnableIdleTimeout 通过 RunInLoop 投递到连接所属的子 Reactor 执行，
    保证 timer_queue_ 的读写只发生在该 EventLoop 线程内，无需加锁。
+   每个 EventLoop 持有自己的 TimerQueue 与 timerfd，
+   因此 ForceClose 也必然在该连接所属线程执行。
 
 5. 参数保护
    EnableIdleTimeout 对 seconds <= 0 直接返回，
    避免「超时为 0」导致所有连接建连后立刻被 ForceClose。
-   idle_timer_fd_ != -1 时也直接返回，防止重复注册。
+   idle_timer_id_ != -1 时也直接返回，防止重复注册。
 
 6. 已知限制
    - 超时精度受 timerfd 与 TimeStamp 差值计算影响，为毫秒级
@@ -395,6 +484,7 @@ test/
    HttpConnection  只负责协议流程控制
    HttpContext     只负责报文解析
    TcpConnection   只负责连接生命周期与读写
+   Buffer          只负责字节的存取与索引管理，不理解协议
    TimerQueue      只负责定时调度，不关心回调内容
    Logger          只负责格式化，不关心落盘时机
    AsyncLogging    只负责落盘，不关心日志内容
@@ -421,30 +511,116 @@ test/
    业务线程的日志开销被压缩为一次 memcpy + 一次可能的 notify，
    与磁盘 IO 彻底脱钩。
 
+8. 缓冲区与协议解耦
+   Buffer 只提供「字节容器 + 索引视图」，不包含任何协议语义；
+   HTTP 的半包/粘包处理完全由 HttpContext 在 Buffer 视图上完成。
+   因此 Buffer 可直接复用于其他协议，只需换一个解析器。
+
+9. 状态前置校验
+   TcpConnection 的 Read / Write / Send 入口都以 Connected 为前置条件，
+   且底层 I/O 函数（ReadNonBlocking / WriteNonBlocking）出错时会主动
+   切换到 DisConnected。因此「调用底层 I/O 后必须重新校验状态」
+   是本类的硬约束，避免对已关闭连接继续操作 channel。
+
 
 八、性能验证
 ------------------------------------------------------------------------
-环境：WSL2，16 核，g++ -O3 -DNDEBUG，wrk 压测 30s。
-服务端：http_server_test，业务为 GET / 返回 20 字节固定正文。
+环境：WSL2，16 核，g++ -O3 -DNDEBUG，日志等级 kError。
+服务端：http_server_test，响应头固定 Connection: keep-alive。
+压测工具：test/qps_bench.cpp（自研，见下方「测量方法」）。
 
-  连接数  线程数  QPS        P50       P99
+测量方法（为什么不用 wrk）：
+  早期用 wrk 得到的数据无法通过 Little's Law 校验：
+  L = QPS × 平均延迟 算出的在途请求数超过连接数上限，
+  例如 250 连接下算出 L = 388，物理上不可能。
+  根因是 wrk 的 Requests/sec 与 Latency 统计样本集不一致，
+  两者相乘不构成有效的 L。
+  因此改用自研压测客户端，测量口径完全自洽：
+  - 每个连接严格「发一个请求 -> 读完一个完整响应」串行，
+    单连接在途请求数恒 <= 1，全局在途请求数恒 <= 连接数；
+  - QPS = 总完成请求数 / 总墙钟时间（客户端自己计数）；
+  - W = 延迟总和 / 总请求数（客户端自己累计）；
+  - 每轮输出 little_L = QPS × W，必须 <= 连接数，否则判定 FAIL。
+  所有下表数据均通过该校验（little_L 与连接数的比值在 0.99~1.00）。
+  压测端用 epoll + 少量线程管理多连接，避免「一连接一线程」的
+  调度开销把压测端变成瓶颈（该问题已实测确认：一连接一线程时，
+  连接数超过 40 后 QPS 反而下降，且同配置重复测量离散度达 28%）。
+
+第一轮：固定 4 个压测线程，扫连接数（/ 路由，15 字节正文）
+
+  连接数  压测线程  QPS        little_L
   --------------------------------------------------
-   500     12     287,657    788 us    11.38 ms
-   150      4     104,379    693 us     2.89 ms
-   250      4     116,157    1.03 ms    3.66 ms
-   300      4     116,892    1.22 ms    4.22 ms
+    50       4      119,168   49.98
+   100       4      143,919   99.97
+   200       4      164,456   199.93
+   400       4      173,422   399.54
+   800       4      153,884   795.52
+
+第二轮：扫压测线程数（/ 路由，15 字节正文，10s）
+
+  连接数  压测线程  QPS        little_L
+  --------------------------------------------------
+   200       8      328,797   199.89
+   400       8      290,932   399.83
+   200      12      296,071   199.92
+   400      12      330,395   399.71
+   100      12      305,597    99.93
+   300      12      345,459   299.88
+
+第三轮：峰值配置可重复性验证（300 连接 / 12 线程，15s，连续 5 次）
+
+  次序   QPS        平均延迟    little_L
+  --------------------------------------------------
+   1     337,645    881.9 us    297.76
+   2     371,430    807.4 us    299.89
+   3     380,606    787.8 us    299.84
+   4     352,310    851.2 us    299.88
+   5     372,608    804.9 us    299.90
+
+  中位数 371,430，区间 337,645 ~ 380,606，离散度约 ±6%。
+
+第四轮：加压业务——扫响应体积（300 连接 / 12 线程，15s）
+
+  路由   正文    连接数  QPS        平均延迟    吞吐
+  ------------------------------------------------------------------
+  /      15 B     300    371,430    807.4 us    5.6 MB/s
+  /1k    1 KB     300    370,231    810.0 us  370.2 MB/s
+  /16k   16 KB    300    251,643   1191.6 us    4.02 GB/s
+  /64k   64 KB     100     88,729   1123.6 us    5.67 GB/s
+  /64k   64 KB     200     93,662   2133.3 us    5.99 GB/s
 
 结论：
-1) 峰值出现在 500 连接 / 12 线程，约 28.7 万 QPS，
-   已接近 nginx 静态服务的下沿，说明主从 Reactor 架构成立。
-2) 150 → 300 连接区间 QPS 基本持平（10.4 万 → 11.7 万），
-   P50 随连接数线性上升，符合「服务端已饱和、新增连接在排队」的特征。
-3) 优化级别的影响显著：-O0 下峰值约 12~20 万且抖动大，
-   -O3 下峰值 28.7 万、P50 从 1.9ms 降到 0.79ms。
-   说明代码中 std::string 与迭代器的抽象开销较重，依赖内联消除。
+1) 峰值约 37 万 QPS（300 连接 / 12 压测线程，中位数 371,430），
+   连续 5 次测量离散度 ±6%，且每轮都通过 Little's Law 校验。
+2) 压测线程数从 4 提到 12，QPS 从 17.3 万（400 连接）升到 33~37 万。
+   4 线程时压测端只占 4 个核，服务端 16 个 sub reactor 跑不满，
+   此时瓶颈在压测端而非服务端。
+3) 4 线程下 QPS 在 400 连接处见顶（173,422），800 连接回落到 153,884，
+   平均延迟同步上升，符合「服务端饱和、新增连接排队」特征。
+4) 响应从 15 B 涨到 1 KB（67 倍），QPS 几乎不变（371,430 → 370,231，
+   -0.3%），吞吐从 5.6 MB/s 涨到 370 MB/s（66 倍）。
+   说明 1 KB 量级下瓶颈完全是每请求固定开销（epoll 事件分发、
+   HttpContext 解析、Buffer 索引维护），数据拷贝成本可忽略。
+   这是框架开销与业务开销的分界点。
+5) 16 KB 时 QPS 降到 251,643（-32%），吞吐 4.02 GB/s；
+   64 KB 时 QPS 降到 9.4 万，吞吐约 6.0 GB/s。
+   QPS 随正文体积近似反比下降而吞吐持续上升，说明大响应下
+   瓶颈已从「每请求固定开销」转移到「内存带宽 + 拷贝次数」。
+   6 GB/s 已接近 WSL2 单机内存带宽量级，此时服务端不再是唯一瓶颈。
+6) 压测期间服务端日志只有 Connection reset by peer 一类错误，
+   全部集中在每轮压测结束的瞬间，属于压测端主动断连产生的 RST，
+   不是服务端缺陷；压测后 RSS 稳定在 26 MB 左右，无异常增长。
+7) 服务端空闲时 CPU 占用为 0（用 /proc/pid/stat 的 utime+stime
+   在 3 秒窗口内采样，增量为 0 tick），无空转。
 
-需要说明的是，本组数据只反映「小请求、无路由、无文件 IO」下的框架开销，
-不能直接与静态文件服务器对比；业务变重后瓶颈会转移到 Buffer 与写路径。
+说明：本组数据只反映「固定正文、单路由、无文件 IO」下的开销，
+不能直接与静态文件服务器对比。真实业务中 JSON 序列化、DB 查询、
+模板渲染等开销会远大于本组的正文拷贝，QPS 会显著低于上述数值。
+
+环境干扰说明：WSL2 的 load average 统计失真，实测出现过
+load = 34.81 但 CPU 空闲率 98%、运行队列只有 1 个任务的情况，
+因此本组数据不以 load average 作为环境判据，改用 /proc/stat
+的 CPU 空闲率与 /proc/pid/stat 的进程 CPU tick 直接采样。
 
 
 九、当前进度
@@ -473,11 +649,21 @@ test/
   [x] 日志：errif 与 net 层输出统一迁移至 LOG_*
   [x] 异步日志：AsyncLogging 前端缓冲 + 双缓冲交换 + 后端落盘
   [x] 异步日志：Latch 保证后端线程就绪、Stop 时排空残留缓冲
-  [x] 压测：wrk 500 连接下 28.7 万 QPS，P50 788us
+  [x] 压测：自研 qps_bench（Little's Law 自校验），300 连接 / 12 线程
+      下 37.1 万 QPS，平均延迟 807us，离散度 ±6%
+  [x] 缓冲区：vector<char> + 双索引三段式布局（Buffer 类）
+  [x] 缓冲区：readv 两段式读（尾部空闲区 + 栈上 64KB 兜底）
+  [x] 缓冲区：真扩容 / 伪扩容两种策略，避免 vector 无限增长
+  [x] 缓冲区：TcpConnection 拆分为 input_buffer_ / output_buffer_
+  [x] 接口升级：MessageCallback 签名改为 (shared_ptr<TcpConnection>, Buffer*)
+  [x] 接口升级：TcpServer / HttpServer / HttpConnection 调用链同步改造
+  [x] 写路径：output_buffer_ 残留时 EnableWrite，EPOLLOUT 驱动续写
+  [x] 状态保护：Write() 在 WriteNonBlocking 后重新校验连接状态
 
 待完成：
-  [ ] 写事件注册（WriteNonBlocking 遇 EAGAIN 后未注册 EPOLLOUT，
-      大响应可能丢失剩余数据）
+  [ ] 写路径：WriteNonBlocking 出错分支的日志仍用 errno 而非 savedErrno
+  [ ] 写路径：Send 后立即 HandleClose 时，output_buffer_ 残留数据会丢失
+      （需补 Shutdown() 或关闭前先排空输出缓冲）
   [ ] 异步日志的丢弃策略（后端跟不上时 buffers_ 会无限增长，
       需加「队列超限则丢弃并记一条提示」的保护）
   [ ] keep-alive 请求计数（keepalive_count_ 已预留，尚未接入上限控制）

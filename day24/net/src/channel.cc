@@ -4,7 +4,7 @@
 #include <unistd.h>
 
 Channel::Channel(int fd, EventLoop* loop):
-    loop_(loop), fd_(fd), listen_events_(0), ready_events_(0), in_epoll_(false){};
+    loop_(loop), fd_(fd), listen_events_(0), ready_events_(0), in_epoll_(false), tied_(false){};
 
 //由channel来负责fd的关闭
 Channel::~Channel(){
@@ -71,6 +71,12 @@ void Channel::EnableWrite(){
 
 void Channel::EnableET(){
     listen_events_ |= EPOLLET;
+    loop_->UpdateChannel(this);
+}
+
+void Channel::DisableWrite()
+{
+    listen_events_ &= ~(EPOLLOUT);
     loop_->UpdateChannel(this);
 }
 
