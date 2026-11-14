@@ -168,7 +168,7 @@ void TcpConnection::ReadNonBlocking(){
         if(savedErrno == EINTR) continue; //正常程序中断
         if(savedErrno == EAGAIN || savedErrno == EWOULDBLOCK) break; //程序读取完成，或者没有数据可读了
             
-        LOG_ERROR << "客户端:" << connfd_ << "读取出错: " << strerror(savedErrno);
+        LOG_DEBUG << "客户端:" << connfd_ << "读取出错: " << strerror(savedErrno);
         HandleClose();
         break;
     }
@@ -187,7 +187,7 @@ void TcpConnection::WriteNonBlocking(){
         if(savedErrno == EINTR) continue;
         if(savedErrno == EAGAIN || savedErrno == EWOULDBLOCK) break;
         
-        LOG_ERROR << "客户端:" << connfd_ << "写取出错: " << strerror(errno);
+        LOG_DEBUG << "客户端:" << connfd_ << "写取出错: " << strerror(errno);
         HandleClose();
         return;
     }
